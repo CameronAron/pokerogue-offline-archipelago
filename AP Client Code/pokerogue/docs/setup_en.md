@@ -33,7 +33,8 @@ Double-click `pokerogue.apworld`, or copy it into your Archipelago install's
 The PokeRogue Offline project builds by cloning upstream PokeRogue and applying
 a set of patches to it. Archipelago support is one more patch in that pipeline.
 
-1. Clone [pokerogue-offline](https://github.com/PokeRogue-Offline/pokerogue-offline).
+1. Clone [pokerogue-offline](https://github.com/PokeRogue-Offline/pokerogue-offline)
+   (or your own fork of it).
 2. Copy the Archipelago integration files in:
    - `archipelago-bridge.js` into `patches/all/node/`
    - `ap-bridge.ts` into `new-files/src/system/archipelago/`
@@ -49,9 +50,13 @@ a set of patches to it. Archipelago support is one more patch in that pipeline.
    (Actions -> Build PokeRogueOffline Windows EXE -> Run workflow), or locally
    by following the same steps.
 
-The patch is idempotent and fails loudly. If upstream PokeRogue has changed
-enough that an anchor no longer matches, the build stops with a message naming
-the anchor rather than silently producing a broken exe.
+The patch touches only two existing files (`main.ts` and `game-over-phase.ts`)
+plus the new bridge module -- it no longer needs to touch starter select at
+all, since the bridge drives the game's own catch data directly instead of
+adding a second check next to it. The patch is idempotent and fails loudly: if
+upstream PokeRogue has changed enough that an anchor no longer matches, the
+build stops with a message naming the anchor rather than silently producing a
+broken exe.
 
 ### Verifying the patch applied
 
@@ -67,10 +72,14 @@ to `ws://127.0.0.1:17777` every few seconds.
 4. Run `/bridge` in the client to confirm. You should see
    `Game bridge: CONNECTED`.
 
-**Start a fresh save.** The bridge reports every species currently marked caught
-in your Pokedex, so joining with a save that already has a full Pokedex will
-instantly send every dexsanity check you have. Use Settings -> Offline -> Clear
-All Data before your first run, or start from a clean install.
+**A fresh save is recommended but no longer required.** The bridge only
+credits a dexsanity check for a species you have genuinely caught in a run
+this session -- it specifically ignores PokeRogue's own free-starter bootstrap
+(the handful of species every new save starts with already marked caught), so
+those no longer fire checks for free. Species you legitimately caught in
+*previous, non-AP* play on the same save will still credit their checks
+immediately on first connect, since that is real catch history. If you'd
+rather start clean, use Settings -> Offline -> Clear All Data.
 
 ## Playing
 
@@ -102,8 +111,19 @@ already running. Close it.
 **Checks are not sending.** Confirm you are in Classic mode, and that `/bridge`
 reports a connection. The bridge polls once per second, so allow a moment.
 
-**All my dexsanity checks fired at once.** You joined with an existing save that
-already had those species caught. See "Start a fresh save" above.
+**A bunch of dexsanity checks fired at once on connect.** You joined with a
+save that had real catch history from before this AP session (not PokeRogue's
+free-starter bootstrap, which the bridge already ignores -- see "A fresh save
+is recommended" above). This is expected: those species were genuinely caught,
+so they credit immediately. Use Clear All Data first if you'd rather not.
+
+**A species I should have doesn't show as available.** The starter select
+screen may have already built its list before the grant applied. Back out to
+the title and reopen starter select, or run `/resync` in the client.
+
+**My level cap isn't rising / Progressive Level Cap doesn't seem to fit.**
+Confirm Dexsanity is off for this slot (`/levelcap` reports "not active" when
+it's on) and that you're in a Classic run, not Endless or Daily.
 
 ---
 

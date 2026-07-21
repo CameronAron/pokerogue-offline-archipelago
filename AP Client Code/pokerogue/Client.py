@@ -109,6 +109,21 @@ class PokeRogueCommandProcessor(ClientCommandProcessor):
         ctx.queue_push_state()
         logger.info("Resync queued.")
 
+    def _cmd_levelcap(self) -> None:
+        """Show your current Classic-mode level cap tier."""
+        ctx: PokeRogueContext = self.ctx
+        if not ctx.level_cap_tiers:
+            logger.info("Progressive Level Cap is not active (dexsanity is on).")
+            return
+        tier = min(ctx.level_cap_count, len(ctx.level_cap_tiers) - 1)
+        logger.info(
+            "Level cap: %d (tier %d/%d, %d copies received).",
+            ctx.level_cap_tiers[tier],
+            tier + 1,
+            len(ctx.level_cap_tiers),
+            ctx.level_cap_count,
+        )
+
 
 class PokeRogueContext(CommonContext):
     command_processor = PokeRogueCommandProcessor
@@ -136,9 +151,17 @@ class PokeRogueContext(CommonContext):
         #: wave number -> AP location id
         self.wave_locations: dict[int, int] = {}
         self.pool_species: list[int] = []
+        #: Every species the gate manages, regardless of mode or pool.
+        self.all_starter_species: list[int] = []
+        #: AP item id for Progressive Level Cap, or None when dexsanity is on.
+        self.progressive_level_cap_item: int | None = None
+        #: Vanilla wave-block level cap values, tier 1 first.
+        self.level_cap_tiers: list[int] = []
 
         #: Species the player is currently allowed to use.
         self.unlocked_species: set[int] = set()
+        #: Copies of Progressive Level Cap received so far.
+        self.level_cap_count: int = 0
         #: Filler item names received, for display in-game.
         self.pending_notifications: list[dict[str, Any]] = []
 
@@ -186,6 +209,10 @@ class PokeRogueContext(CommonContext):
             int(k): int(v) for k, v in (data.get("wave_locations") or {}).items()
         }
         self.pool_species = [int(x) for x in (data.get("pool_species") or [])]
+        self.all_starter_species = [int(x) for x in (data.get("all_starter_species") or [])]
+        raw_cap_item = data.get("progressive_level_cap_item")
+        self.progressive_level_cap_item = int(raw_cap_item) if raw_cap_item is not None else None
+        self.level_cap_tiers = [int(x) for x in (data.get("level_cap_tiers") or [])]
 
         logger.info(
             "Slot configured: goal wave %d, dexsanity %s, %d species in pool.",
@@ -211,11 +238,17 @@ class PokeRogueContext(CommonContext):
         """
         unlocked: set[int] = set()
         notifications: list[dict[str, Any]] = []
+        level_cap_count = 0
 
         for item in self.items_received:
             species_id = self.species_items.get(item.item)
             if species_id is not None:
                 unlocked.add(species_id)
+            elif (
+                self.progressive_level_cap_item is not None
+                and item.item == self.progressive_level_cap_item
+            ):
+                level_cap_count += 1
             else:
                 name = self.item_names.lookup_in_game(item.item, self.game)
                 if name:
@@ -225,7 +258,17 @@ class PokeRogueContext(CommonContext):
         for species_id in sorted(newly):
             logger.info("Unlocked: %s", self.species_display(species_id))
 
+        if level_cap_count != self.level_cap_count and self.level_cap_tiers:
+            tier = min(level_cap_count, len(self.level_cap_tiers) - 1)
+            logger.info(
+                "Level cap raised to %d (tier %d/%d).",
+                self.level_cap_tiers[tier],
+                tier + 1,
+                len(self.level_cap_tiers),
+            )
+
         self.unlocked_species = unlocked
+        self.level_cap_count = level_cap_count
         self.pending_notifications = notifications
 
     def queue_push_state(self) -> None:
@@ -273,11 +316,14 @@ class PokeRogueContext(CommonContext):
             "death_link": "DeathLink" in self.tags,
             # Everything the bridge needs to enforce gating locally.
             "unlocked_species": sorted(self.unlocked_species),
+            "all_starter_species": self.all_starter_species,
             "pool_species": self.pool_species,
             "dexsanity_species": {str(k): v for k, v in self.dexsanity_species.items()},
             "wave_locations": {str(k): v for k, v in self.wave_locations.items()},
             "checked_locations": sorted(self.checked_locations),
             "notifications": self.pending_notifications,
+            "level_cap_count": self.level_cap_count,
+            "level_cap_tiers": self.level_cap_tiers,
         }
 
     async def push_state_loop(self) -> None:

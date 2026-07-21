@@ -4,11 +4,11 @@
  *
  * Wires Archipelago multiworld support into the PokeRogue build.
  *
- * Design intent: keep the patched surface as small as possible. Almost all of
+ * Design intent: keep the patched surface as small as possible. Nearly all of
  * the integration lives in a single new module (ap-bridge.ts) that *observes*
- * `globalScene` on a timer, because polling public state survives upstream
- * churn far better than a dozen regex anchors would. Only three things cannot
- * be done by observation, and those are the only three anchors below:
+ * and *drives* `globalScene` on a timer, because polling/writing public state
+ * survives upstream churn far better than a pile of regex anchors would. Only
+ * one thing cannot be done this way, and it is the only real anchor below:
  *
  *   1. src/system/archipelago/ap-bridge.ts  (new file)
  *        The bridge itself. Copied verbatim from new-files/.
@@ -16,30 +16,34 @@
  *   2. src/main.ts
  *        A side-effect import so the bridge starts with the game.
  *
- *   3. src/ui/handlers/starter-select-ui-handler.ts
- *        Block selecting a species whose AP unlock item has not arrived.
- *        This must be a real patch -- a poller cannot refuse an input.
- *
- *   4. src/phases/game-over-phase.ts
+ *   3. src/phases/game-over-phase.ts
  *        Report a Classic-mode victory (the goal condition) and a run loss
  *        (for DeathLink). Patched rather than polled because the goal must be
  *        exact, and `sessionsWon` alone cannot distinguish this run from a
  *        previously imported save.
  *
- * When the Archipelago client is not running, `apIsSpeciesUnlocked()` returns
- * true for everything and the bridge sends nothing, so a patched build plays
- * exactly like an unpatched one. That property is worth preserving in any
- * future edits here.
+ * Earlier versions of this patch also touched starter-select-ui-handler.ts to
+ * add a second species-selection gate. That turned out to be the wrong design
+ * -- it stacked a redundant AP-only condition next to the game's own
+ * `caughtAttr` check, instead of *driving* caughtAttr, so AP-granted species
+ * were never actually marked caught (nothing could ever be selected) and
+ * vanilla's free starter bootstrap was never locked out (those species stayed
+ * selectable and fired their checks immediately on connect). The bridge now
+ * grants/locks caughtAttr directly, so the game's own vanilla logic *is* the
+ * enforcement, and this file no longer needs to be patched at all.
+ *
+ * When the Archipelago client is not running, the bridge sends nothing and
+ * touches no game data, so a patched build plays exactly like an unpatched
+ * one. That property is worth preserving in any future edits here.
  *
  * NOTE ON TESTING: anchors below were confirmed against pagefaultgames/pokerogue
- * `main` at v1.12.0.9. The apworld and its generation are covered by unit tests;
- * the in-game behaviour of this patch has NOT been verified in a real build yet.
- * Build once and sanity-check before shipping.
+ * `main` at v1.12.0.9. The apworld and its generation are covered by unit tests,
+ * and this patch has been applied to a real checkout and typechecked. The
+ * in-game runtime behaviour has NOT been verified in a built exe yet.
  *
  * Targets:
  *   pokerogue-src/src/system/archipelago/ap-bridge.ts        (created)
  *   pokerogue-src/src/main.ts
- *   pokerogue-src/src/ui/handlers/starter-select-ui-handler.ts
  *   pokerogue-src/src/phases/game-over-phase.ts
  */
 
@@ -122,63 +126,7 @@ if (mainSrc.includes("archipelago/ap-bridge")) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Sub-patch 3: starter-select-ui-handler.ts  →  gate locked species
-// ─────────────────────────────────────────────────────────────────────────────
-
-const STARTER_PATH = path.join(
-  "pokerogue-src",
-  "src",
-  "ui",
-  "handlers",
-  "starter-select-ui-handler.ts",
-);
-let starterSrc = readFile(STARTER_PATH);
-
-if (starterSrc.includes("apIsSpeciesUnlocked")) {
-  console.log("SKIP starter-select-ui-handler.ts — gate already present");
-} else {
-  // 3a: import the gate helper.
-  const IMPORT_ANCHOR = requireMatch(
-    starterSrc,
-    /^import .*from "#app\/global-scene";$/m,
-    "global-scene import in starter-select-ui-handler.ts",
-  )[0];
-  starterSrc = starterSrc.replace(
-    IMPORT_ANCHOR,
-    `${IMPORT_ANCHOR}\nimport { apIsSpeciesUnlocked } from "#app/system/archipelago/ap-bridge";`,
-  );
-
-  // 3b: refuse the ACTION button for a species we have not been sent.
-  //
-  // Upstream reads:
-  //     if (!this.speciesStarterDexEntry?.caughtAttr) {
-  //       error = true;
-  //     } else if (this.starterSpecies.length <= 6) {
-  //
-  // `caughtAttr` is the vanilla "have you ever caught this" check; we AND in
-  // the Archipelago unlock so an uncaught *or* un-granted species is refused.
-  const GATE_PATTERN =
-    /([ \t]*)if \(!this\.speciesStarterDexEntry\?\.caughtAttr\) \{\n([ \t]*)error = true;\n/;
-  const gateMatch = requireMatch(
-    starterSrc,
-    GATE_PATTERN,
-    "starter ACTION caughtAttr guard",
-  );
-
-  const indent = gateMatch[1];
-  const innerIndent = gateMatch[2];
-  const replacement =
-    `${indent}// archipelago: a species is selectable only if it has been caught AND its\n` +
-    `${indent}// unlock item has been received. Outside a multiworld this is a no-op.\n` +
-    `${indent}if (!this.speciesStarterDexEntry?.caughtAttr || !apIsSpeciesUnlocked(this.lastSpecies.speciesId)) {\n` +
-    `${innerIndent}error = true;\n`;
-
-  starterSrc = starterSrc.replace(gateMatch[0], replacement);
-  writeFile(STARTER_PATH, starterSrc);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Sub-patch 4: game-over-phase.ts  →  report victory / defeat
+// Sub-patch 3: game-over-phase.ts  →  report victory / defeat
 // ─────────────────────────────────────────────────────────────────────────────
 
 const GAMEOVER_PATH = path.join("pokerogue-src", "src", "phases", "game-over-phase.ts");
@@ -187,7 +135,7 @@ let gameOverSrc = readFile(GAMEOVER_PATH);
 if (gameOverSrc.includes("apNotifyVictory")) {
   console.log("SKIP game-over-phase.ts — victory notify already present");
 } else {
-  // 4a: import the notifiers.
+  // 3a: import the notifiers.
   const IMPORT_ANCHOR = requireMatch(
     gameOverSrc,
     /^import .*from "#app\/global-scene";$/m,
@@ -198,7 +146,7 @@ if (gameOverSrc.includes("apNotifyVictory")) {
     `${IMPORT_ANCHOR}\nimport { apNotifyDefeat, apNotifyVictory } from "#app/system/archipelago/ap-bridge";`,
   );
 
-  // 4b: hook the Classic victory bookkeeping. `sessionsWon++` runs exactly
+  // 3b: hook the Classic victory bookkeeping. `sessionsWon++` runs exactly
   // once per won Classic run, inside `if (this.isVictory && isClassic)`.
   const WIN_PATTERN = /([ \t]*)globalScene\.gameData\.gameStats\.sessionsWon\+\+;/;
   const winMatch = requireMatch(gameOverSrc, WIN_PATTERN, "sessionsWon increment");
@@ -210,7 +158,7 @@ if (gameOverSrc.includes("apNotifyVictory")) {
       `${winIndent}apNotifyVictory(globalScene.currentBattle?.waveIndex ?? 200);`,
   );
 
-  // 4c: report a run-ending loss for DeathLink. Anchored on the fade duration
+  // 3c: report a run-ending loss for DeathLink. Anchored on the fade duration
   // line, which runs for both outcomes, so we branch on isVictory ourselves.
   const FADE_PATTERN = /([ \t]*)const fadeDuration = this\.isVictory \? 10000 : 5000;/;
   const fadeMatch = requireMatch(gameOverSrc, FADE_PATTERN, "game over fade duration");

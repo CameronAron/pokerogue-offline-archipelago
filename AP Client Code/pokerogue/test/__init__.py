@@ -2,7 +2,7 @@
 
 from test.bases import WorldTestBase
 
-from ..Items import ITEM_NAME_TO_ID
+from ..Items import ITEM_NAME_TO_ID, PROGRESSIVE_LEVEL_CAP_ITEM
 from ..Locations import LOCATION_NAME_TO_ID
 from ..Species import STARTER_SPECIES
 
@@ -13,22 +13,22 @@ class PokeRogueTestBase(WorldTestBase):
 
 
 class TestDefaults(PokeRogueTestBase):
-    """Default options: dexsanity on, 120 species, wave 200 goal."""
+    """Default options: dexsanity on, wave 200 goal."""
 
     options = {}
 
     def test_pool_balance(self) -> None:
         """Every location must have exactly one item to fill it."""
         locations = self.multiworld.get_unfilled_locations(self.player)
-        # itempool is shared, but in a solo test it is all ours.
         self.assertEqual(
             len(self.multiworld.itempool),
             len(locations),
             "item pool size must match unfilled location count",
         )
 
-    def test_species_pool_size(self) -> None:
-        self.assertEqual(len(self.world.species_pool), 120)
+    def test_full_species_catalog_used(self) -> None:
+        """Dexsanity on always uses every species -- no pool-size tuning."""
+        self.assertEqual(len(self.world.species_pool), len(STARTER_SPECIES))
         self.assertEqual(len(self.world.starting_species), 3)
 
     def test_starting_species_precollected(self) -> None:
@@ -53,25 +53,29 @@ class TestDefaults(PokeRogueTestBase):
         self.assertNotIn("Wave 200 Cleared", names)
         self.assertIn("Wave 190 Cleared", names)
 
-    def test_all_pool_species_have_dexsanity(self) -> None:
+    def test_all_species_have_dexsanity(self) -> None:
         names = {loc.name for loc in self.multiworld.get_locations(self.player)}
         for species in self.world.species_pool:
             self.assertIn(f"Catch {species.display}", names)
 
+    def test_no_progressive_level_cap(self) -> None:
+        """Progressive Level Cap only exists when dexsanity is off."""
+        names = {item.name for item in self.multiworld.itempool}
+        self.assertNotIn(PROGRESSIVE_LEVEL_CAP_ITEM, names)
+
+    def test_single_flat_region(self) -> None:
+        """Everything should be immediately reachable -- no wave-ordering gate."""
+        empty_state = self.multiworld.state
+        for loc in self.multiworld.get_locations(self.player):
+            self.assertTrue(
+                loc.access_rule(empty_state), f"{loc.name} should have no access rule"
+            )
+
 
 class TestDexsanityOff(PokeRogueTestBase):
-    """With dexsanity off the species pool must clamp to the wave checks."""
+    """Dexsanity off: fixed roster, Progressive Level Cap fills wave checks."""
 
-    options = {
-        "dexsanity": False,
-        "species_pool_size": 120,
-        "wave_check_interval": 10,
-    }
-
-    def test_pool_clamped(self) -> None:
-        # 19 wave checks (10..190), minus a filler reserve, plus 3 precollected.
-        self.assertLessEqual(len(self.world.species_pool), 20)
-        self.assertGreaterEqual(len(self.world.species_pool), 6)
+    options = {"dexsanity": False, "starting_species": 3, "wave_check_interval": 10}
 
     def test_pool_balance(self) -> None:
         locations = self.multiworld.get_unfilled_locations(self.player)
@@ -84,9 +88,40 @@ class TestDexsanityOff(PokeRogueTestBase):
             "dexsanity locations must not exist when the option is off",
         )
 
+    def test_roster_is_fixed_to_starting_species(self) -> None:
+        self.assertEqual(len(self.world.species_pool), 0)
+        self.assertEqual(len(self.world.starting_species), 3)
+
+    def test_every_wave_check_is_progressive_level_cap(self) -> None:
+        names = [item.name for item in self.multiworld.itempool]
+        cap_count = names.count(PROGRESSIVE_LEVEL_CAP_ITEM)
+        # 10..190 in steps of 10, exclusive of the goal wave itself.
+        self.assertEqual(cap_count, 19)
+        self.assertEqual(len(names), 19, "no filler needed -- counts should match exactly")
+
+    def test_slot_data_exposes_level_cap_tiers(self) -> None:
+        data = self.world.fill_slot_data()
+        self.assertEqual(len(data["level_cap_tiers"]), 20)
+        self.assertEqual(data["level_cap_tiers"][0], 10)
+        self.assertEqual(data["level_cap_tiers"][-1], 200)
+        self.assertIsNotNone(data["progressive_level_cap_item"])
+
+
+class TestDexsanityOffShortGoal(PokeRogueTestBase):
+    options = {"dexsanity": False, "goal_wave": 50, "wave_check_interval": 5}
+
+    def test_pool_balance(self) -> None:
+        locations = self.multiworld.get_unfilled_locations(self.player)
+        self.assertEqual(len(self.multiworld.itempool), len(locations))
+
+    def test_cap_items_match_wave_checks(self) -> None:
+        names = [item.name for item in self.multiworld.itempool]
+        # 5,10,...,45 -- exclusive of goal wave 50.
+        self.assertEqual(names.count(PROGRESSIVE_LEVEL_CAP_ITEM), 9)
+
 
 class TestShortGoal(PokeRogueTestBase):
-    options = {"goal_wave": 50, "wave_check_interval": 5, "species_pool_size": 30}
+    options = {"goal_wave": 50, "wave_check_interval": 5}
 
     def test_wave_locations_stop_before_goal(self) -> None:
         names = {loc.name for loc in self.multiworld.get_locations(self.player)}
@@ -99,35 +134,28 @@ class TestShortGoal(PokeRogueTestBase):
         self.assertEqual(len(self.multiworld.itempool), len(locations))
 
 
-class TestMinimalPool(PokeRogueTestBase):
+class TestMinimalStartingSpecies(PokeRogueTestBase):
     """Smallest legal configuration must still generate."""
 
-    options = {
-        "species_pool_size": 6,
-        "starting_species": 6,
-        "wave_check_interval": 25,
-        "goal_wave": 50,
-    }
+    options = {"starting_species": 1, "dexsanity": False, "wave_check_interval": 25, "goal_wave": 50}
 
     def test_pool_balance(self) -> None:
         locations = self.multiworld.get_unfilled_locations(self.player)
         self.assertEqual(len(self.multiworld.itempool), len(locations))
 
-    def test_everything_precollected_is_playable(self) -> None:
+    def test_one_starting_species(self) -> None:
+        self.assertEqual(len(self.world.starting_species), 1)
+
+
+class TestMaxStartingSpecies(PokeRogueTestBase):
+    options = {"starting_species": 6}
+
+    def test_pool_balance(self) -> None:
+        locations = self.multiworld.get_unfilled_locations(self.player)
+        self.assertEqual(len(self.multiworld.itempool), len(locations))
+
+    def test_six_starting_species(self) -> None:
         self.assertEqual(len(self.world.starting_species), 6)
-
-
-class TestMaximalPool(PokeRogueTestBase):
-    """Every starter in the game at once."""
-
-    options = {"species_pool_size": len(STARTER_SPECIES), "dexsanity": True}
-
-    def test_pool_balance(self) -> None:
-        locations = self.multiworld.get_unfilled_locations(self.player)
-        self.assertEqual(len(self.multiworld.itempool), len(locations))
-
-    def test_full_roster(self) -> None:
-        self.assertEqual(len(self.world.species_pool), len(STARTER_SPECIES))
 
 
 class TestDataIntegrity(PokeRogueTestBase):
@@ -156,12 +184,18 @@ class TestDataIntegrity(PokeRogueTestBase):
             "dexsanity",
             "dexsanity_species",
             "species_items",
+            "all_starter_species",
             "pool_species",
             "starting_species",
             "wave_locations",
+            "progressive_level_cap_item",
+            "level_cap_tiers",
         ):
             self.assertIn(key, data)
         self.assertEqual(data["goal_wave"], 200)
-        self.assertEqual(len(data["pool_species"]), 120)
-        # every pooled species must be resolvable to a location
-        self.assertEqual(len(data["dexsanity_species"]), 120)
+        self.assertEqual(len(data["pool_species"]), len(STARTER_SPECIES))
+        self.assertEqual(len(data["dexsanity_species"]), len(STARTER_SPECIES))
+        self.assertEqual(len(data["all_starter_species"]), len(STARTER_SPECIES))
+        # dexsanity on -> no progressive level cap this seed
+        self.assertIsNone(data["progressive_level_cap_item"])
+        self.assertEqual(data["level_cap_tiers"], [])

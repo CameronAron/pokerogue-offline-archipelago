@@ -3,6 +3,7 @@
 ID layout (item namespace):
     BASE + <species_id>        species unlock items  (species_id <= 8901)
     BASE + 90000 + <n>         filler / trap items
+    BASE + 91000                Progressive Level Cap (dexsanity-off mode only)
 """
 
 from typing import NamedTuple
@@ -13,6 +14,20 @@ from .Species import STARTER_SPECIES
 
 BASE_ID = 77_770_000
 FILLER_OFFSET = 90_000
+PROGRESSIVE_OFFSET = 91_000
+
+#: name of the single progressive item used when dexsanity is off.
+PROGRESSIVE_LEVEL_CAP_ITEM = "Progressive Level Cap"
+PROGRESSIVE_LEVEL_CAP_ID = BASE_ID + PROGRESSIVE_OFFSET
+
+#: Classic mode's vanilla level cap, one entry per 10-wave block, taken from
+#: https://wiki.pokerogue.net/gameplay:modes:classic . Tier 1 (level 10) is
+#: always available for free; each copy of Progressive Level Cap received
+#: raises the effective cap to the next tier, up to level 200 at tier 20.
+LEVEL_CAP_TIERS: tuple[int, ...] = (
+    10, 16, 24, 32, 38, 48, 56, 64, 74, 84,
+    94, 104, 114, 126, 138, 150, 162, 174, 188, 200,
+)
 
 
 class PokeRogueItem(Item):
@@ -72,12 +87,17 @@ FILLER_ITEM_IDS: dict[str, int] = {
 }
 
 #: The full item_name_to_id table exposed to Archipelago.
-ITEM_NAME_TO_ID: dict[str, int] = {**SPECIES_ITEMS, **FILLER_ITEM_IDS}
+ITEM_NAME_TO_ID: dict[str, int] = {
+    **SPECIES_ITEMS,
+    **FILLER_ITEM_IDS,
+    PROGRESSIVE_LEVEL_CAP_ITEM: PROGRESSIVE_LEVEL_CAP_ID,
+}
 
 #: name -> classification, for everything above.
 ITEM_CLASSIFICATION: dict[str, ItemClassification] = {
     **{n: ItemClassification.progression for n in SPECIES_ITEMS},
     **{f.name: f.classification for f in FILLER_ITEMS},
+    PROGRESSIVE_LEVEL_CAP_ITEM: ItemClassification.progression,
 }
 
 #: item name -> numeric SpeciesId, for the client to act on.
@@ -96,6 +116,7 @@ ITEM_GROUPS: dict[str, set[str]] = {
         "Master Ball",
     },
     "Vouchers": {"Egg Voucher", "Egg Voucher Plus"},
+    "Progression Pacing": {PROGRESSIVE_LEVEL_CAP_ITEM},
 }
 
 #: Per-generation convenience groups, e.g. "Generation 1 Species".

@@ -6,15 +6,36 @@
  * owns all authoritative state; this module only:
  *
  *   1. observes the live game and reports events (catches, waves, victory), and
- *   2. enforces the species lock locally using the unlock set the client sends.
+ *   2. enforces species availability and (in one mode) the level cap locally,
+ *      using the state the client sends.
  *
  * Design notes
  * ------------
  * Almost everything here is *polled* off `globalScene` rather than hooked into
  * game internals. PokeRogue's `main` branch moves fast, and a poller that reads
  * public state degrades gracefully across versions where a patched call site
- * would simply fail to apply. Only the species gate and the victory notify are
- * real source patches, because neither can be done by observation alone.
+ * would simply fail to apply. The only real source patch left is the victory/
+ * defeat notify in game-over-phase.ts -- everything else, including the
+ * species lock and the level cap, is done by this module driving the game's
+ * own data structures directly, which means the game's own UI enforces
+ * everything for free instead of needing a second parallel gate.
+ *
+ * The species gate specifically: PokeRogue already refuses to let you select
+ * an uncaught species as a starter (`dexData[id].caughtAttr === 0n`). Rather
+ * than add a second condition next to that check, this module *drives*
+ * caughtAttr directly -- granting it for AP-unlocked species and forcing it to
+ * zero for everything else, every poll tick. That means the vanilla UI's own
+ * gating becomes the enforcement, with no source patch needed for it at all,
+ * and it correctly overrides PokeRogue's own free starter bootstrap (a fixed
+ * handful of species come pre-caught on every new save).
+ *
+ * Dexsanity catch-detection intentionally reads `caughtCount`, not
+ * `caughtAttr`. `caughtCount` only increments through a real in-run catch
+ * (see `setPokemonSpeciesCaught` in the game source) -- never through the
+ * vanilla free-starter bootstrap and never through this module's own grants.
+ * That keeps "did the player actually catch one" fully decoupled from "is
+ * this species currently allowed", so the two mechanisms can run every tick
+ * without ordering concerns or false-positive checks.
  *
  * All reporting is idempotent: we send the *current* state (every caught
  * species, the current wave) rather than deltas, and the client de-duplicates
@@ -22,12 +43,22 @@
  * mid-run reconnects self-healing.
  */
 
+import { AbilityAttr } from "#enums/ability-attr";
+import { DexAttr } from "#enums/dex-attr";
 import { globalScene } from "#app/global-scene";
 
-const BRIDGE_VERSION = "0.1.0";
+const BRIDGE_VERSION = "0.2.0";
 const DEFAULT_PORT = 17777;
 const POLL_INTERVAL_MS = 1000;
 const RECONNECT_DELAY_MS = 3000;
+
+/** The same bitmask PokeRogue itself grants to `defaultStarterSpecies` on a
+ * fresh save (see `initDexData`): non-shiny, either gender, default variant
+ * and form. AP grants mirror this exactly, so a granted species looks and
+ * behaves like a normal, ordinarily-caught starter. */
+const GRANT_DEX_ATTR: bigint =
+  DexAttr.NON_SHINY | DexAttr.MALE | DexAttr.FEMALE | DexAttr.DEFAULT_VARIANT | DexAttr.DEFAULT_FORM;
+const GRANT_ABILITY_ATTR: number = AbilityAttr.ABILITY_1;
 
 /** Overridable for testing / non-default ports via localStorage. */
 function bridgePort(): number {
@@ -51,12 +82,16 @@ interface ApState {
   goalWave: number;
   dexsanity: boolean;
   deathLink: boolean;
-  /** Species the player may currently use. */
+  /** Species the player may currently use. Sole source of truth for the gate. */
   unlocked: Set<number>;
-  /** Species that can ever be unlocked this seed. Everything else is dead. */
-  pool: Set<number>;
-  /** Species that have a dexsanity check attached. */
+  /** Every species the gate manages at all, regardless of mode. */
+  allStarters: Set<number>;
+  /** Species that have a dexsanity check attached (empty when dexsanity is off). */
   dexsanitySpecies: Set<number>;
+  /** Copies of Progressive Level Cap received so far. */
+  levelCapCount: number;
+  /** Vanilla wave-block level cap values, tier 1 first. Empty when dexsanity is on. */
+  levelCapTiers: number[];
 }
 
 const state: ApState = {
@@ -66,18 +101,19 @@ const state: ApState = {
   dexsanity: true,
   deathLink: false,
   unlocked: new Set<number>(),
-  pool: new Set<number>(),
+  allStarters: new Set<number>(),
   dexsanitySpecies: new Set<number>(),
+  levelCapCount: 0,
+  levelCapTiers: [],
 };
 
 let socket: WebSocket | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** Last values we reported, so we only send on change. */
-let lastReportedWave = -1;
+/** Last catch set we reported, so we only send on change. */
 let lastReportedCaught = new Set<number>();
-let sessionActive = false;
+let lastReportedWave = -1;
 
 // ─────────────────────────────────────────────────────────────── public API
 
@@ -91,12 +127,10 @@ export function apIsActive(): boolean {
   return state.connected;
 }
 
-/**
- * Whether the player is allowed to put this species on their team.
- *
- * Returns true when AP is not active so that unpatched/offline play is
- * unaffected. A species outside the seed's pool can never be unlocked.
- */
+/** Whether the player is currently allowed to use this species. Read-only;
+ * the gate itself is enforced by writing dexData directly (see below), so
+ * nothing needs to call this to block a selection anymore. Exposed for any
+ * future UI (e.g. a locked-species indicator) that wants to read it. */
 export function apIsSpeciesUnlocked(speciesId: number): boolean {
   if (!state.connected) {
     return true;
@@ -104,26 +138,12 @@ export function apIsSpeciesUnlocked(speciesId: number): boolean {
   return state.unlocked.has(speciesId);
 }
 
-/** True if the species exists in this seed at all (used for UI shading). */
-export function apIsSpeciesInPool(speciesId: number): boolean {
-  if (!state.connected) {
-    return true;
-  }
-  return state.pool.has(speciesId);
-}
-
-/** Short label explaining why a species is unavailable, for tooltips. */
+/** Short label explaining why a species is unavailable, for a future tooltip. */
 export function apLockReason(speciesId: number): string | null {
-  if (!state.connected) {
+  if (!state.connected || !state.allStarters.has(speciesId)) {
     return null;
   }
-  if (!state.pool.has(speciesId)) {
-    return "Not in this Archipelago seed";
-  }
-  if (!state.unlocked.has(speciesId)) {
-    return "Locked - unlock item not yet received";
-  }
-  return null;
+  return state.unlocked.has(speciesId) ? null : "Locked - unlock item not yet received";
 }
 
 /** Called by the patched GameOverPhase on a Classic victory. */
@@ -219,10 +239,12 @@ function handleMessage(msg: Record<string, any>): void {
       state.dexsanity = Boolean(msg.dexsanity);
       state.deathLink = Boolean(msg.death_link);
       state.unlocked = new Set<number>((msg.unlocked_species ?? []).map(Number));
-      state.pool = new Set<number>((msg.pool_species ?? []).map(Number));
+      state.allStarters = new Set<number>((msg.all_starter_species ?? []).map(Number));
       state.dexsanitySpecies = new Set<number>(
         Object.keys(msg.dexsanity_species ?? {}).map(Number),
       );
+      state.levelCapCount = Number(msg.level_cap_count ?? 0);
+      state.levelCapTiers = (msg.level_cap_tiers ?? []).map(Number);
       // A fresh state push may reveal checks we never reported (e.g. the
       // client restarted); clear the cache so the next poll re-reports.
       resetReportCache();
@@ -264,10 +286,12 @@ function scene(): any | null {
 }
 
 /**
- * Collect every species currently marked caught in the Pokedex.
+ * Collect every species with at least one genuine in-run catch this session.
  *
- * `caughtAttr` is a BigInt bitfield; any nonzero value means caught. We only
- * care about species that carry a dexsanity check in this seed.
+ * Deliberately reads `caughtCount`, a plain counter that real catches
+ * increment and nothing else touches (see module doc comment) -- so this is
+ * immune both to the vanilla free-starter bootstrap and to this module's own
+ * grants below.
  */
 function collectCaughtSpecies(gameData: any): Set<number> {
   const caught = new Set<number>();
@@ -278,21 +302,81 @@ function collectCaughtSpecies(gameData: any): Set<number> {
 
   for (const speciesId of state.dexsanitySpecies) {
     const entry = dexData[speciesId];
-    if (!entry) {
-      continue;
-    }
-    try {
-      if (BigInt(entry.caughtAttr ?? 0) !== 0n) {
-        caught.add(speciesId);
-      }
-    } catch {
-      // Non-BigInt-coercible value; fall back to a loose truthiness check.
-      if (entry.caughtAttr) {
-        caught.add(speciesId);
-      }
+    if (entry && Number(entry.caughtCount ?? 0) > 0) {
+      caught.add(speciesId);
     }
   }
   return caught;
+}
+
+/**
+ * Grant or lock every species the gate manages, every tick.
+ *
+ * Grant: OR in the baseline "usable starter" bits, never subtracting from
+ * whatever the game already recorded through real play.
+ *
+ * Lock: force caughtAttr to zero, regardless of how it got set -- the vanilla
+ * bootstrap, a real catch of an as-yet-ungranted species, or a previous
+ * grant that has since been revoked (should not normally happen, but the
+ * sweep is idempotent either way).
+ *
+ * `seenAttr` is left untouched either direction: a locked species the player
+ * has encountered in the wild still shows a normal "seen" silhouette, which
+ * is cosmetic and does not affect selectability.
+ */
+function enforceSpeciesGate(gameData: any): void {
+  const dexData = gameData?.dexData;
+  const starterData = gameData?.starterData;
+  if (!dexData || !starterData) {
+    return;
+  }
+
+  for (const speciesId of state.allStarters) {
+    const dexEntry = dexData[speciesId];
+    if (!dexEntry) {
+      continue;
+    }
+
+    if (state.unlocked.has(speciesId)) {
+      dexEntry.caughtAttr = BigInt(dexEntry.caughtAttr ?? 0) | GRANT_DEX_ATTR;
+      const starterEntry = starterData[speciesId];
+      if (starterEntry) {
+        starterEntry.abilityAttr = Number(starterEntry.abilityAttr ?? 0) | GRANT_ABILITY_ATTR;
+      }
+    } else {
+      dexEntry.caughtAttr = 0n;
+    }
+  }
+}
+
+/**
+ * Install (once) a wrapper around `globalScene.getMaxExpLevel` that clamps
+ * the result to the AP-granted level cap tier when Progressive Level Cap is
+ * active. Left untouched -- returns the vanilla wave-based value -- when
+ * dexsanity is on, when the caller explicitly asked to ignore the cap (this
+ * is how Rare Candy already bypasses it in vanilla), or before AP connects.
+ *
+ * This patches the live scene instance rather than the source, since
+ * `getMaxExpLevel` is a pure function of public state; wrapping the bound
+ * instance method survives every internal call site (`this.getMaxExpLevel()`
+ * resolves through the instance first) without touching battle-scene.ts at
+ * all. Idempotent via a marker property, and self-reinstalls if the scene is
+ * ever recreated (e.g. a full page reload swaps out `globalScene`).
+ */
+function installLevelCapOverride(s: any): void {
+  if (s.__apLevelCapPatched) {
+    return;
+  }
+  const original: (ignoreLevelCap?: boolean) => number = s.getMaxExpLevel.bind(s);
+  s.getMaxExpLevel = (ignoreLevelCap = false): number => {
+    const vanilla = original(ignoreLevelCap);
+    if (ignoreLevelCap || !state.connected || state.levelCapTiers.length === 0) {
+      return vanilla;
+    }
+    const tier = Math.min(state.levelCapCount, state.levelCapTiers.length - 1);
+    return Math.min(vanilla, state.levelCapTiers[tier]);
+  };
+  s.__apLevelCapPatched = true;
 }
 
 function poll(): void {
@@ -304,6 +388,8 @@ function poll(): void {
   if (!s) {
     return;
   }
+
+  installLevelCapOverride(s);
 
   // ── Dexsanity ────────────────────────────────────────────────────────────
   if (state.dexsanity) {
@@ -320,19 +406,24 @@ function poll(): void {
     }
   }
 
+  // ── Species gate ─────────────────────────────────────────────────────────
+  try {
+    enforceSpeciesGate(s.gameData);
+  } catch {
+    /* game data not ready yet */
+  }
+
   // ── Wave milestones ──────────────────────────────────────────────────────
   try {
     const battle = s.currentBattle;
     const mode = s.gameMode;
     if (battle && mode?.isClassic) {
-      sessionActive = true;
       const wave = Number(battle.waveIndex ?? 0);
       if (wave > 0 && wave !== lastReportedWave) {
         lastReportedWave = wave;
         send({ cmd: "Wave", wave, mode: "classic" });
       }
     } else if (!battle) {
-      sessionActive = false;
       lastReportedWave = -1;
     }
   } catch {
@@ -365,5 +456,3 @@ function start(): void {
 }
 
 start();
-
-export { sessionActive };

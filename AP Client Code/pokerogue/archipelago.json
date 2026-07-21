@@ -1,11 +1,11 @@
 {
   "game": "PokeRogue",
-  "world_version": "0.1.0",
+  "world_version": "0.2.0",
   "minimum_ap_version": "0.6.4",
   "compatible_version": 7,
   "authors": [
     "Cameron"
   ],
-  "description": "PokeRogue (standalone offline desktop build) -- dexsanity catch checks, Classic-mode wave milestones, and species-unlock gating.",
-  "world_source": "https://github.com/PokeRogue-Offline/pokerogue-offline"
+  "description": "PokeRogue (standalone offline desktop build) -- dexsanity catch checks, Classic-mode wave milestones, Progressive Level Cap, and species-unlock gating.",
+  "world_source": "https://github.com/CameronAron/pokerogue-offline-archipelago"
 }
