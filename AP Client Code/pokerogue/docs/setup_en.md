@@ -38,15 +38,16 @@ Download the `PokeRogueArchipelago.exe` app from the releases tab
 
 ## Joining a multiworld
 
-1. Start the **PokeRogue Client** from the Archipelago Launcher.
-2. Enter the server address and your slot name when prompted.
-3. Launch the patched PokeRogue build. It connects automatically.
-4. Run `/bridge` in the client to confirm. You should see
-   `Game bridge: CONNECTED`.
+1. Launch the patched PokeRogue app
 
 **A fresh save is required.** If you don't have a fresh save before starting 
 with the standalone app, your multiworld will release unintended checks. 
 Use `Settings -> Offline -> Clear All Data` to restart your standalone save.
+
+2. Start the **PokeRogue Client** from the Archipelago Launcher.
+3. Enter the server address and your slot name when prompted.
+4. Run `/bridge` in the client to confirm. You should see
+   `Game bridge: CONNECTED`.
 
 ## Playing
 
