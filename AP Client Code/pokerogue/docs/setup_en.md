@@ -2,7 +2,7 @@
 
 ## Required software
 
-- [Archipelago](https://github.com/ArchipelagoMW/Archipelago/releases) 0.6.4 or
+- [Archipelago](https://github.com/ArchipelagoMW/Archipelago/releases) 0.6.7 or
   newer.
 - The `pokerogue.apworld` file from this release.
 - A **patched PokeRogue Offline desktop build**. You build this yourself; see
