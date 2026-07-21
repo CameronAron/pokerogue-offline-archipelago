@@ -25,6 +25,8 @@ apply_patch "community-menu.js"    all
 
 apply_patch "update-available-screen.js" all
 
+apply_patch "archipelago-bridge.js"   all
+
 # ── Mobile (iOS + Android) ────────────────────────────────────────────────────
 if [[ "$PLATFORM" == "mobile" || "$PLATFORM" == "android" ]]; then
 
