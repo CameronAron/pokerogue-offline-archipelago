@@ -97,11 +97,29 @@ class PokeRogueCommandProcessor(ClientCommandProcessor):
     def _cmd_unlocked(self) -> None:
         """List the species you have been granted so far."""
         ctx: PokeRogueContext = self.ctx
+        if not ctx.dexsanity:
+            logger.info("Dexsanity is off -- species aren't gated this seed.")
+            return
         if not ctx.unlocked_species:
             logger.info("No species unlocked yet.")
             return
         names = sorted(ctx.species_display(sid) for sid in ctx.unlocked_species)
         logger.info("Unlocked %d species: %s", len(names), ", ".join(names))
+
+    def _cmd_pending(self) -> None:
+        """List species with a dexsanity check you haven't caught yet."""
+        ctx: PokeRogueContext = self.ctx
+        if not ctx.dexsanity:
+            logger.info("Dexsanity is off -- there are no catch checks this seed.")
+            return
+        pending = [
+            sid for sid, loc_id in ctx.dexsanity_species.items() if loc_id not in ctx.checked_locations
+        ]
+        if not pending:
+            logger.info("No pending dexsanity checks -- you've caught everything in the pool.")
+            return
+        names = sorted(ctx.species_display(sid) for sid in pending)
+        logger.info("%d species still need catching: %s", len(names), ", ".join(names))
 
     def _cmd_resync(self) -> None:
         """Force a full state push to the game."""
@@ -112,8 +130,8 @@ class PokeRogueCommandProcessor(ClientCommandProcessor):
     def _cmd_levelcap(self) -> None:
         """Show your current Classic-mode level cap tier."""
         ctx: PokeRogueContext = self.ctx
-        if not ctx.level_cap_tiers:
-            logger.info("Progressive Level Cap is not active (dexsanity is on).")
+        if not ctx.progressive_level_cap_enabled or not ctx.level_cap_tiers:
+            logger.info("Progressive Level Cap is off this seed.")
             return
         tier = min(ctx.level_cap_count, len(ctx.level_cap_tiers) - 1)
         logger.info(
@@ -144,6 +162,7 @@ class PokeRogueContext(CommonContext):
         self.slot_data: dict[str, Any] = {}
         self.goal_wave: int = 200
         self.dexsanity: bool = True
+        self.progressive_level_cap_enabled: bool = False
         #: numeric SpeciesId -> AP location id
         self.dexsanity_species: dict[int, int] = {}
         #: AP item id -> numeric SpeciesId
@@ -167,6 +186,12 @@ class PokeRogueContext(CommonContext):
 
         self.goal_reached: bool = False
         self._push_pending = asyncio.Event()
+        # self.seed_name is declared and initialized to None by CommonContext
+        # itself; we only need to populate it (see on_package's RoomInfo
+        # handling below) -- the base class never does. It is a stable
+        # identifier for the connected room, used by the game bridge to
+        # detect "this save was last used for a different multiworld" and
+        # avoid crediting that multiworld's unrelated catch history.
 
     @property
     def bridge_url(self) -> str:
@@ -181,7 +206,13 @@ class PokeRogueContext(CommonContext):
         await self.send_connect()
 
     def on_package(self, cmd: str, args: dict) -> None:
-        if cmd == "Connected":
+        if cmd == "RoomInfo":
+            # The base class never stores this despite declaring the field --
+            # each game client opts in. It arrives before Connected, so it's
+            # available in time for the very first State push.
+            self.seed_name = args.get("seed_name")
+
+        elif cmd == "Connected":
             self.slot_data = args.get("slot_data", {}) or {}
             self._apply_slot_data(self.slot_data)
             self.unlocked_species = set()
@@ -199,6 +230,7 @@ class PokeRogueContext(CommonContext):
     def _apply_slot_data(self, data: dict[str, Any]) -> None:
         self.goal_wave = int(data.get("goal_wave", 200))
         self.dexsanity = bool(data.get("dexsanity", True))
+        self.progressive_level_cap_enabled = bool(data.get("progressive_level_cap", False))
         self.dexsanity_species = {
             int(k): int(v) for k, v in (data.get("dexsanity_species") or {}).items()
         }
@@ -307,10 +339,16 @@ class PokeRogueContext(CommonContext):
             pass
 
     def build_state_payload(self) -> dict[str, Any]:
+        pending_dexsanity = [
+            sid
+            for sid, loc_id in self.dexsanity_species.items()
+            if loc_id not in self.checked_locations
+        ]
         return {
             "cmd": "State",
             "connected": self.slot is not None,
             "slot": self.slot_info[self.slot].name if self.slot in self.slot_info else None,
+            "seed_name": self.seed_name,
             "goal_wave": self.goal_wave,
             "dexsanity": self.dexsanity,
             "death_link": "DeathLink" in self.tags,
@@ -324,6 +362,10 @@ class PokeRogueContext(CommonContext):
             "notifications": self.pending_notifications,
             "level_cap_count": self.level_cap_count,
             "level_cap_tiers": self.level_cap_tiers,
+            "progressive_level_cap": self.progressive_level_cap_enabled,
+            # Species with a live dexsanity check not yet completed. Drives
+            # the "still needs catching" indicator in-game.
+            "pending_dexsanity_species": pending_dexsanity,
         }
 
     async def push_state_loop(self) -> None:
@@ -358,6 +400,13 @@ class PokeRogueContext(CommonContext):
         elif cmd == "Catch":
             await self.handle_catch(int(msg.get("speciesId", 0)))
 
+        elif cmd == "LockedCatch":
+            name = msg.get("speciesName") or self.species_display(int(msg.get("speciesId", 0)))
+            logger.info(
+                "%s was caught but not added to your party -- its unlock item hasn't arrived yet.",
+                name,
+            )
+
         elif cmd == "Wave":
             await self.handle_wave(int(msg.get("wave", 0)), msg.get("mode"))
 
@@ -387,18 +436,23 @@ class PokeRogueContext(CommonContext):
     async def handle_wave(self, wave: int, mode: str | None) -> None:
         if mode and mode.lower() != "classic":
             return
+        # `wave` is globalScene.currentBattle.waveIndex, which becomes N the
+        # moment wave N *starts* (see newBattle() -> getNewBattleProps():
+        # `waveIndex: this.currentBattle.waveIndex + 1`), not once it's
+        # cleared. So "wave N cleared" is only true once the game has moved
+        # on to wave N+1 -- i.e. strictly less than the live wave, not <=.
         to_send = [
             loc_id
             for wave_num, loc_id in self.wave_locations.items()
-            if wave_num <= wave and loc_id not in self.checked_locations
+            if wave_num < wave and loc_id not in self.checked_locations
         ]
         if to_send:
             await self.check_locations(to_send)
 
-        if wave >= self.goal_wave and not self.goal_reached:
-            # Reaching the goal wave is not the same as clearing it; only the
-            # explicit Victory message completes the goal for wave 200. For
-            # shorter goals, arriving at the wave is enough.
+        if wave > self.goal_wave and not self.goal_reached:
+            # Same "cleared, not just reached" correction applies to short
+            # goals. Wave 200 goes through handle_victory instead, which is
+            # keyed off the boss kill itself and unaffected by this.
             if self.goal_wave < 200:
                 await self.complete_goal()
 

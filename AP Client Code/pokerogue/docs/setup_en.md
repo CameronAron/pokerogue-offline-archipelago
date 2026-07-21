@@ -19,9 +19,9 @@ Archipelago server  <--->  PokeRogue Client  <--->  the game
                               (Python)          (localhost:17777)
 ```
 
-The client holds the authoritative state. The game is told the full unlock set
-every time it changes, so crashing, reloading, or reconnecting mid-run all
-recover correctly on their own.
+The client holds the authoritative state. The game is told the full unlock
+set every time it changes, so crashing, reloading, or reconnecting mid-run
+all recover correctly on their own.
 
 ## Installing the apworld
 
@@ -30,8 +30,10 @@ Double-click `pokerogue.apworld`, or copy it into your Archipelago install's
 
 ## Building a patched game
 
-The PokeRogue Offline project builds by cloning upstream PokeRogue and applying
-a set of patches to it. Archipelago support is one more patch in that pipeline.
+The PokeRogue Offline project builds by cloning upstream PokeRogue and
+applying a set of patches to it. Archipelago support is a few more patches in
+that pipeline, touching two existing game files plus two UI files, and adding
+one new module.
 
 1. Clone [pokerogue-offline](https://github.com/PokeRogue-Offline/pokerogue-offline)
    (or your own fork of it).
@@ -47,16 +49,12 @@ a set of patches to it. Archipelago support is one more patch in that pipeline.
 
 4. Build using the project's normal workflow. For Windows that is
    `.github/workflows/build-exe.yml`, which you can run via GitHub Actions
-   (Actions -> Build PokeRogueOffline Windows EXE -> Run workflow), or locally
-   by following the same steps.
+   (Actions -> Build -> Run workflow), or locally by following the same
+   steps.
 
-The patch touches only two existing files (`main.ts` and `game-over-phase.ts`)
-plus the new bridge module -- it no longer needs to touch starter select at
-all, since the bridge drives the game's own catch data directly instead of
-adding a second check next to it. The patch is idempotent and fails loudly: if
-upstream PokeRogue has changed enough that an anchor no longer matches, the
-build stops with a message naming the anchor rather than silently producing a
-broken exe.
+The patch is idempotent and fails loudly: if upstream PokeRogue has changed
+enough that an anchor no longer matches, the build stops with a message
+naming the anchor rather than silently producing a broken exe.
 
 ### Verifying the patch applied
 
@@ -72,27 +70,29 @@ to `ws://127.0.0.1:17777` every few seconds.
 4. Run `/bridge` in the client to confirm. You should see
    `Game bridge: CONNECTED`.
 
-**A fresh save is recommended but no longer required.** The bridge only
-credits a dexsanity check for a species you have genuinely caught in a run
-this session -- it specifically ignores PokeRogue's own free-starter bootstrap
-(the handful of species every new save starts with already marked caught), so
-those no longer fire checks for free. Species you legitimately caught in
-*previous, non-AP* play on the same save will still credit their checks
-immediately on first connect, since that is real catch history. If you'd
-rather start clean, use Settings -> Offline -> Clear All Data.
+**A fresh save is optional, not required.** The bridge tags your save with
+the connected multiworld's identity, and the first time it sees a save that's
+untagged (or tagged for a *different* multiworld), it silently treats
+whatever's already caught as a starting baseline instead of firing checks for
+it -- so switching multiworlds on the same save, or joining with an old save
+from non-AP play, won't dump a pile of instant checks on connect. If you'd
+rather start clean anyway, use Settings -> Offline -> Clear All Data.
 
 ## Playing
 
 Start a **Classic** run. Only Classic counts -- Endless, Daily and Challenge
 runs send nothing and cannot complete the goal.
 
-In starter select, species you have not been granted will refuse to be added to
-your party. Use `/unlocked` in the client to see your current roster.
+With Dexsanity on, species you haven't been granted refuse to join your
+starter team, and a wild catch of a locked species won't join your party
+either (the catch still happens normally, it just doesn't stick). Use
+`/unlocked` to see your current roster and `/pending` to see what still needs
+catching. With Dexsanity off, none of this applies -- play normally.
 
 ## Changing the bridge port
 
-If port 17777 is taken, start the client with `--bridge_port 12345` and set the
-matching value in-game by running this in the game's developer console:
+If port 17777 is taken, start the client with `--bridge_port 12345` and set
+the matching value in-game by running this in the game's developer console:
 
 ```js
 localStorage.setItem("ap_bridge_port", "12345");
@@ -102,41 +102,44 @@ Then reload the game.
 
 ## Troubleshooting
 
-**The client says the game is running but has not connected.** The build is not
-patched, or was built before the patch was registered in `apply-patches.sh`.
+**The client says the game is running but has not connected.** The build is
+not patched, or was built before the patch was registered in
+`apply-patches.sh`.
 
 **`Could not listen on ws://127.0.0.1:17777`.** Another PokeRogue client is
 already running. Close it.
 
-**Checks are not sending.** Confirm you are in Classic mode, and that `/bridge`
-reports a connection. The bridge polls once per second, so allow a moment.
+**Checks are not sending.** Confirm you are in Classic mode, and that
+`/bridge` reports a connection. The bridge polls once per second, so allow a
+moment.
 
-**A bunch of dexsanity checks fired at once on connect.** You joined with a
-save that had real catch history from before this AP session (not PokeRogue's
-free-starter bootstrap, which the bridge already ignores -- see "A fresh save
-is recommended" above). This is expected: those species were genuinely caught,
-so they credit immediately. Use Clear All Data first if you'd rather not.
+**A bunch of dexsanity checks fired at once on connect.** If this is a save
+with real catch history from a *different* multiworld or from non-AP play,
+that's expected on the very first connect to the new multiworld -- those
+species were genuinely caught, so they credit once. It should not repeat on
+later reconnects to the same multiworld.
 
 **A species I should have doesn't show as available.** The starter select
 screen may have already built its list before the grant applied. Back out to
 the title and reopen starter select, or run `/resync` in the client.
 
-**My level cap isn't rising / Progressive Level Cap doesn't seem to fit.**
-Confirm Dexsanity is off for this slot (`/levelcap` reports "not active" when
-it's on) and that you're in a Classic run, not Endless or Daily.
+**My level cap isn't rising / Progressive Level Cap doesn't seem to apply.**
+Confirm Progressive Level Cap is turned on for this slot (`/levelcap` reports
+if it's off) and that you're in a Classic run, not Endless or Daily.
 
 ---
 
 ## Alternative: the userscript (not recommended)
 
-A Tampermonkey userscript is included for playing on the official website or an
-unpatched build. It reads the save out of `localStorage` and reports checks the
-same way.
+A Tampermonkey userscript is included for playing on the official website or
+an unpatched build. It reads the save out of `localStorage` and reports
+checks the same way.
 
-**It cannot enforce the species lock.** Blocking a starter selection requires
-changing the game's input handling, which is only possible in the patched build.
-The userscript shows you which species are locked and warns you, but nothing
-stops you from choosing one. Enforcement is on the honour system.
+**It cannot enforce the species lock or block a party add.** Both require
+changing the game's input handling, which is only possible in the patched
+build. The userscript shows you which species are locked and warns you, but
+nothing stops you from choosing or catching one. Enforcement is on the honour
+system.
 
 Use it only if you cannot build the patched client. To install: add
 `pokerogue-ap.user.js` to Tampermonkey, then start the PokeRogue Client as

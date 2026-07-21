@@ -605,3 +605,31 @@ STARTER_SPECIES: tuple[SpeciesInfo, ...] = (
 BY_NAME: dict[str, SpeciesInfo] = {s.display: s for s in STARTER_SPECIES}
 #: numeric SpeciesId -> SpeciesInfo
 BY_ID: dict[int, SpeciesInfo] = {s.species_id: s for s in STARTER_SPECIES}
+
+#: enum_name -> SpeciesInfo, for looking up the curated trio table below.
+BY_ENUM_NAME: dict[str, SpeciesInfo] = {s.enum_name: s for s in STARTER_SPECIES}
+
+#: The three starters PokeRogue's own "Fresh Start (Full Reset)" challenge
+#: locks a player to per generation -- the same 27 species real accounts
+#: start with. Used when the `random_starters` option is off. Verified
+#: against STARTER_SPECIES: all 27 resolve, and each generation's own trio
+#: costs 9-12 (gen 9's trio alone exceeds the vanilla 10-point starter cost
+#: cap), so picking every species from one generation together is not always
+#: possible -- selection logic in __init__.py samples across the whole
+#: 27-species pool under a combined 10-point budget, not per generation.
+DEFAULT_STARTER_TRIO_NAMES: dict[int, tuple[str, str, str]] = {
+    1: ("BULBASAUR", "CHARMANDER", "SQUIRTLE"),
+    2: ("CHIKORITA", "CYNDAQUIL", "TOTODILE"),
+    3: ("TREECKO", "TORCHIC", "MUDKIP"),
+    4: ("TURTWIG", "CHIMCHAR", "PIPLUP"),
+    5: ("SNIVY", "TEPIG", "OSHAWOTT"),
+    6: ("CHESPIN", "FENNEKIN", "FROAKIE"),
+    7: ("ROWLET", "LITTEN", "POPPLIO"),
+    8: ("GROOKEY", "SCORBUNNY", "SOBBLE"),
+    9: ("SPRIGATITO", "FUECOCO", "QUAXLY"),
+}
+
+#: Flat tuple of all 27 curated species, resolved to SpeciesInfo.
+DEFAULT_STARTER_POOL: tuple[SpeciesInfo, ...] = tuple(
+    BY_ENUM_NAME[name] for names in DEFAULT_STARTER_TRIO_NAMES.values() for name in names
+)

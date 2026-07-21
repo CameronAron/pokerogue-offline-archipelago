@@ -7,7 +7,8 @@ with the Archipelago bridge shipped alongside this apworld. See docs/setup_en.md
 import logging
 from typing import Any, ClassVar
 
-from BaseClasses import Item, ItemClassification, Region, Tutorial
+from BaseClasses import Item, ItemClassification, LocationProgressType, Region, Tutorial
+from Options import OptionGroup
 from worlds.AutoWorld import WebWorld, World
 from worlds.LauncherComponents import Component, Type, components, launch_subprocess
 
@@ -18,6 +19,7 @@ from .Items import (
     ITEM_NAME_TO_ID,
     LEVEL_CAP_TIERS,
     PROGRESSIVE_LEVEL_CAP_ITEM,
+    PURE_FILLER_NAMES,
     USEFUL_FILLER_NAMES,
     PokeRogueItem,
     species_item_name,
@@ -30,16 +32,22 @@ from .Locations import (
     dexsanity_location_name,
 )
 from .Options import PokeRogueOptions
-from .Species import SOURCE_GAME_VERSION, STARTER_SPECIES, SpeciesInfo
+from .Species import DEFAULT_STARTER_POOL, SOURCE_GAME_VERSION, STARTER_SPECIES, SpeciesInfo
 
 logger = logging.getLogger("PokeRogue")
 
 MENU = "Menu"
 
-#: How much of the full species catalog to draw starting species from,
-#: weighted toward lower cost so an opening run is actually playable. Not
-#: player-facing -- just keeps a fresh game from handing out three
-#: cost-10 legendaries as your only options.
+#: Vanilla's own cap on combined starter cost for a single team (see
+#: https://wiki.pokerogue.net/gameplay:modes:classic). Applied to the curated
+#: 27-species starting pool when Random Starters is off, mirroring the same
+#: budget a real starter-select screen enforces.
+CURATED_STARTER_COST_CAP = 10
+
+#: How much of the full species catalog to draw starting species from when
+#: Random Starters is on, weighted toward lower cost so an opening run is
+#: actually playable. Not player-facing -- just keeps a fresh game from
+#: handing out three cost-10 legendaries as your only options.
 STARTING_SPECIES_CANDIDATE_MULTIPLIER = 8
 STARTING_SPECIES_CANDIDATE_MINIMUM = 40
 
@@ -73,6 +81,13 @@ class PokeRogueWeb(WebWorld):
             ["ap-pokerogue"],
         )
     ]
+    option_groups = [
+        OptionGroup(
+            "Sanities",
+            ["dexsanity", "dexsanity_exclude_above_cost", "split_dexsanity_rewards", "progressive_level_cap"],
+        ),
+        OptionGroup("Starters", ["random_starters", "starting_species"]),
+    ]
 
 
 class PokeRogueWorld(World):
@@ -101,6 +116,15 @@ class PokeRogueWorld(World):
         self.species_pool: list[SpeciesInfo] = []
         #: Species granted for free at game start.
         self.starting_species: list[SpeciesInfo] = []
+        #: Starting species (curated mode only) that skip their own
+        #: dexsanity location, since vanilla already considers them caught.
+        self.precredited_species: set[int] = set()
+        #: How many dexsanity locations got LocationProgressType.EXCLUDED.
+        #: create_items uses this to guarantee enough pure-filler items exist
+        #: to cover them -- an excluded location can only ever hold a plain
+        #: filler item, and the normal weighted filler roll can land on
+        #: useful-classified entries (Master Ball etc.) that don't qualify.
+        self.excluded_location_count: int = 0
         self.wave_locations: list = []
         self.goal_wave: int = 200
 
@@ -112,7 +136,7 @@ class PokeRogueWorld(World):
         interval = opts.wave_check_interval.value
         self.wave_locations = build_wave_locations(interval, self.goal_wave)
 
-        starting = min(opts.starting_species.value, len(STARTER_SPECIES))
+        requested_starting = min(opts.starting_species.value, len(STARTER_SPECIES))
 
         # Dexsanity on: every species is in play, full stop -- no pool size to
         # tune, since every species brings its own location with it.
@@ -122,19 +146,62 @@ class PokeRogueWorld(World):
         # species themselves.
         self.species_pool = list(STARTER_SPECIES) if opts.dexsanity else []
 
-        self.starting_species = self._pick_starting_species(starting)
+        if opts.random_starters:
+            self.starting_species = self._pick_random_starting_species(requested_starting)
+        else:
+            self.starting_species = self._pick_curated_starting_species(requested_starting)
+            # Vanilla already considers these caught from the moment a fresh
+            # save exists -- don't ask the player to re-catch their own
+            # starting species just to satisfy a check.
+            self.precredited_species = {s.species_id for s in self.starting_species}
+
         for species in self.starting_species:
             self.multiworld.push_precollected(
                 self.create_item(species_item_name(species.display))
             )
 
-    def _pick_starting_species(self, count: int) -> list[SpeciesInfo]:
+    def _pick_random_starting_species(self, count: int) -> list[SpeciesInfo]:
         """Sample starting species with a light preference for low cost."""
         rng = self.random
         candidates = sorted(STARTER_SPECIES, key=lambda s: s.cost)
         window = max(count * STARTING_SPECIES_CANDIDATE_MULTIPLIER, STARTING_SPECIES_CANDIDATE_MINIMUM)
         candidates = candidates[:window] if len(candidates) >= window else candidates
         return rng.sample(candidates, count)
+
+    def _pick_curated_starting_species(self, count: int) -> list[SpeciesInfo]:
+        """Sample from the 27-species curated pool under the vanilla cost cap.
+
+        Greedily accepts species from a shuffled candidate list while the
+        combined cost still fits the budget. If the requested count cannot be
+        reached within budget (e.g. every curated species costs 3+, so 4 of
+        them already exceeds a cost-10 cap), returns as many as fit and warns.
+        """
+        rng = self.random
+        candidates = list(DEFAULT_STARTER_POOL)
+        rng.shuffle(candidates)
+
+        chosen: list[SpeciesInfo] = []
+        total_cost = 0
+        for species in candidates:
+            if len(chosen) >= count:
+                break
+            if total_cost + species.cost > CURATED_STARTER_COST_CAP:
+                continue
+            chosen.append(species)
+            total_cost += species.cost
+
+        if len(chosen) < count:
+            logger.warning(
+                "PokeRogue (%s): the curated starter pool can't fit %d species under "
+                "the %d-point cost cap -- only %d fit (total cost %d). Turn on Random "
+                "Starters for a larger opening roster.",
+                self.player_name,
+                count,
+                CURATED_STARTER_COST_CAP,
+                len(chosen),
+                total_cost,
+            )
+        return chosen
 
     # ---------------------------------------------------------------- regions
 
@@ -152,9 +219,19 @@ class PokeRogueWorld(World):
             menu.locations.append(loc)
 
         if self.options.dexsanity:
+            exclude_above = self.options.dexsanity_exclude_above_cost.value
             for species in self.species_pool:
+                if species.species_id in self.precredited_species:
+                    continue
                 name = dexsanity_location_name(species.display)
                 loc = PokeRogueLocation(self.player, name, LOCATION_NAME_TO_ID[name], menu)
+                if species.cost > exclude_above:
+                    # Still a real, checkable location -- just protected from
+                    # ever holding something another location needs, so a
+                    # rare or hard-to-reach species can't gate someone else's
+                    # progress. See dexsanity_exclude_above_cost's docstring.
+                    loc.progress_type = LocationProgressType.EXCLUDED
+                    self.excluded_location_count += 1
                 menu.locations.append(loc)
 
         victory = PokeRogueLocation(self.player, "Classic Mode Victory", None, menu)
@@ -179,34 +256,75 @@ class PokeRogueWorld(World):
         )
 
     def create_items(self) -> None:
-        pool: list[Item] = []
         precollected = {s.species_id for s in self.starting_species}
 
+        # (cost, item) so overflow trimming below can shed the costliest
+        # species first -- the same ones already being treated as unreliable
+        # by dexsanity_exclude_above_cost.
+        species_items: list[tuple[int, Item]] = []
         if self.options.dexsanity:
             for species in self.species_pool:
                 if species.species_id in precollected:
                     continue
-                pool.append(self.create_item(species_item_name(species.display)))
-        else:
-            # No species growth in this mode -- every wave check instead
-            # raises the Classic-mode level cap by one tier.
-            pool.extend(
+                species_items.append(
+                    (species.cost, self.create_item(species_item_name(species.display)))
+                )
+
+        level_cap_items: list[Item] = []
+        if self.options.progressive_level_cap:
+            level_cap_items = [
                 self.create_item(PROGRESSIVE_LEVEL_CAP_ITEM) for _ in self.wave_locations
-            )
+            ]
 
         total_locations = len(self.multiworld.get_unfilled_locations(self.player))
+
+        # Excluded locations can only ever hold a plain filler item, so at
+        # most (total_locations - excluded_location_count) slots are
+        # available for species/level-cap items combined. Dexsanity and
+        # Progressive Level Cap are independent toggles and can both demand a
+        # large item count at once, so this can't just be assumed to fit --
+        # it has to be checked and, if needed, trimmed.
+        max_non_fillable = total_locations - self.excluded_location_count
+        non_fillable_count = len(species_items) + len(level_cap_items)
+
+        if non_fillable_count > max_non_fillable:
+            overflow = non_fillable_count - max_non_fillable
+            species_items.sort(key=lambda pair: pair[0])  # cheapest first
+            trimmed = 0
+            while overflow > 0 and species_items:
+                species_items.pop()  # drop the costliest remaining
+                overflow -= 1
+                trimmed += 1
+            if overflow > 0:
+                # Species alone couldn't cover it -- would need
+                # excluded_location_count to approach the whole species pool,
+                # essentially impossible, but degrade safely regardless.
+                level_cap_items = level_cap_items[: max(0, len(level_cap_items) - overflow)]
+            if trimmed:
+                logger.warning(
+                    "PokeRogue (%s): %d high-cost species lost their unlock item so "
+                    "%d excluded locations could still get a guaranteed pure-filler "
+                    "item. Raise dexsanity_exclude_above_cost, or turn off Progressive "
+                    "Level Cap, to avoid this.",
+                    self.player_name,
+                    trimmed,
+                    self.excluded_location_count,
+                )
+
+        pool: list[Item] = [item for _, item in species_items]
+        pool.extend(level_cap_items)
+
         remaining = total_locations - len(pool)
 
-        if remaining < 0:
-            logger.warning(
-                "PokeRogue (%s): trimmed %d items that did not fit.",
-                self.player_name,
-                -remaining,
-            )
-            pool = pool[:total_locations]
-            remaining = 0
-
-        for _ in range(remaining):
+        # Excluded locations can only ever hold a plain filler item, so the
+        # first slice of filler generated is guaranteed pure filler -- enough
+        # to cover every excluded location regardless of what the weighted
+        # roll below would otherwise have picked. The overflow handling above
+        # guarantees remaining >= excluded_location_count here.
+        guaranteed_pure = min(remaining, self.excluded_location_count)
+        for _ in range(guaranteed_pure):
+            pool.append(self.create_item(self.random.choice(PURE_FILLER_NAMES)))
+        for _ in range(remaining - guaranteed_pure):
             pool.append(self.create_item(self.get_filler_item_name()))
 
         self.multiworld.itempool += pool
@@ -223,17 +341,21 @@ class PokeRogueWorld(World):
     def fill_slot_data(self) -> dict[str, Any]:
         """Everything the game-side bridge needs to enforce the rules locally."""
         dexsanity_on = bool(self.options.dexsanity)
+        level_cap_on = bool(self.options.progressive_level_cap)
         return {
             "goal_wave": self.goal_wave,
             "wave_check_interval": self.options.wave_check_interval.value,
             "dexsanity": dexsanity_on,
+            "progressive_level_cap": level_cap_on,
             "death_link": bool(self.options.death_link),
             "game_version": SOURCE_GAME_VERSION,
-            # numeric SpeciesId -> AP location id, for catch events
+            # numeric SpeciesId -> AP location id, for catch events. Excludes
+            # precredited curated starters, which never get a location at all.
             "dexsanity_species": (
                 {
                     str(s.species_id): LOCATION_NAME_TO_ID[dexsanity_location_name(s.display)]
                     for s in self.species_pool
+                    if s.species_id not in self.precredited_species
                 }
                 if dexsanity_on
                 else {}
@@ -244,16 +366,17 @@ class PokeRogueWorld(World):
                 for s in STARTER_SPECIES
             },
             # Every species the game gate should ever manage. Anything absent
-            # from this list is left fully alone (not a starter at all).
+            # from this list is left fully alone (not a starter at all). Only
+            # meaningful when dexsanity is on -- see the gate's own docs.
             "all_starter_species": [s.species_id for s in STARTER_SPECIES],
             "pool_species": [s.species_id for s in self.species_pool],
             "starting_species": [s.species_id for s in self.starting_species],
             "wave_locations": {str(w.wave): w.address for w in self.wave_locations},
             # Progressive Level Cap: item id to count copies of, and the tier
-            # table to look the count up against. Both None/empty when
-            # dexsanity is on, since the cap is unrestricted in that mode.
+            # table to look the count up against. Both None/empty when the
+            # option is off.
             "progressive_level_cap_item": (
-                None if dexsanity_on else ITEM_NAME_TO_ID[PROGRESSIVE_LEVEL_CAP_ITEM]
+                ITEM_NAME_TO_ID[PROGRESSIVE_LEVEL_CAP_ITEM] if level_cap_on else None
             ),
-            "level_cap_tiers": [] if dexsanity_on else list(LEVEL_CAP_TIERS),
+            "level_cap_tiers": list(LEVEL_CAP_TIERS) if level_cap_on else [],
         }

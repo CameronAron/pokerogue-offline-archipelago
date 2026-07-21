@@ -1,6 +1,6 @@
 {
   "appId": "xyz.scooom.pkr",
-  "productName": "PokeRogue Offline",
+  "productName": "PokeRogue Archipelago",
   "mac": {
     "target": ["dmg"],
     "icon": "appIcon.icns",

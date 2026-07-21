@@ -1,4 +1,4 @@
-name: Build PokeRogueOffline Windows EXE
+name: Build PokeRogue Archipelago Windows EXE
 
 on:
   workflow_dispatch:
@@ -119,7 +119,7 @@ jobs:
         run: |
           node -e "
             const pkg = require('./package.json');
-            if (!pkg.description) pkg.description = 'PokeRogue Offline';
+            if (!pkg.description) pkg.description = 'PokeRogue Archipelago';
             if (!pkg.author) pkg.author = 'Scooom';
             pkg.main = 'main.cjs';
             require('fs').writeFileSync('./package.json', JSON.stringify(pkg, null, 2));
@@ -149,11 +149,11 @@ jobs:
         id: exe_path
         shell: bash
         run: |
-          FILE=$(find -type f -name "PokeRogue*Offline*.exe" | head -n1)
+          FILE=$(find -type f -name "*.exe" | head -n1)
           if [ "${{ inputs.dev }}" = "true" ]; then
-            OUTPUT="./PokeRogueOffline-dev.exe"
+            OUTPUT="./PokeRogueArchipelago-dev.exe"
           else
-            OUTPUT="./PokeRogueOffline.exe"
+            OUTPUT="./PokeRogueArchipelago.exe"
           fi
           mv "$FILE" "$OUTPUT"
           echo "exe=$OUTPUT" >> $GITHUB_OUTPUT
@@ -161,6 +161,6 @@ jobs:
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PokeRogueOffline-Windows${{ inputs.dev && '-dev' || '' }}
+          name: PokeRogueArchipelago-Windows${{ inputs.dev && '-dev' || '' }}
           path: ${{ steps.exe_path.outputs.exe }}
           retention-days: 30

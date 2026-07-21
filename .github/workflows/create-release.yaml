@@ -326,10 +326,10 @@ jobs:
           TAG: ${{ steps.suffix.outputs.tag }}
         run: |
           ARTIFACT_ID=$(gh api "repos/$REPO/actions/runs/$APPIMAGE_RUN_ID/artifacts" \
-            --jq ".artifacts[] | select(.name == \"PokeRogueOffline-AppImage${TAG}\") | .id")
+            --jq ".artifacts[] | select(.name == \"PokeRogueArchipelago-AppImage${TAG}\") | .id")
           gh api "repos/$REPO/actions/artifacts/$ARTIFACT_ID/zip" > appimage.zip
           unzip appimage.zip -d appimage-out
-          mv "appimage-out/PokeRogueOffline${TAG}.AppImage" "./PokeRogueOffline${TAG}.AppImage"
+          mv "appimage-out/PokeRogueArchipelago${TAG}.AppImage" "./PokeRogueArchipelago${TAG}.AppImage"
           
       - name: Download Windows EXE artifact
         env:
@@ -339,10 +339,10 @@ jobs:
           TAG: ${{ steps.suffix.outputs.tag }}
         run: |
           ARTIFACT_ID=$(gh api "repos/$REPO/actions/runs/$WINDOWS_RUN_ID/artifacts" \
-            --jq ".artifacts[] | select(.name == \"PokeRogueOffline-Windows${TAG}\") | .id")
+            --jq ".artifacts[] | select(.name == \"PokeRogueArchipelago-Windows${TAG}\") | .id")
           gh api "repos/$REPO/actions/artifacts/$ARTIFACT_ID/zip" > windows.zip
           unzip windows.zip -d windows-out
-          mv "windows-out/PokeRogueOffline${TAG}.exe" "./PokeRogueOffline${TAG}.exe"
+          mv "windows-out/PokeRogueArchipelago${TAG}.exe" "./PokeRogueArchipelago${TAG}.exe"
 
       - name: Download macOS x64 DMG artifact
         env:
@@ -352,10 +352,10 @@ jobs:
           TAG: ${{ steps.suffix.outputs.tag }}
         run: |
           ARTIFACT_ID=$(gh api "repos/$REPO/actions/runs/$MACOS_RUN_ID/artifacts" \
-            --jq ".artifacts[] | select(.name == \"PokeRogueOffline-macOS-x64${TAG}\") | .id")
+            --jq ".artifacts[] | select(.name == \"PokeRogueArchipelago-macOS-x64${TAG}\") | .id")
           gh api "repos/$REPO/actions/artifacts/$ARTIFACT_ID/zip" > macos-x64.zip
           unzip macos-x64.zip -d macos-x64-out
-          mv "macos-x64-out/PokeRogueOffline${TAG}-x64.dmg" "./PokeRogueOffline${TAG}-x64.dmg"
+          mv "macos-x64-out/PokeRogueArchipelago${TAG}-x64.dmg" "./PokeRogueArchipelago${TAG}-x64.dmg"
 
       - name: Download macOS arm64 DMG artifact
         env:
@@ -365,10 +365,10 @@ jobs:
           TAG: ${{ steps.suffix.outputs.tag }}
         run: |
           ARTIFACT_ID=$(gh api "repos/$REPO/actions/runs/$MACOS_RUN_ID/artifacts" \
-            --jq ".artifacts[] | select(.name == \"PokeRogueOffline-macOS-arm64${TAG}\") | .id")
+            --jq ".artifacts[] | select(.name == \"PokeRogueArchipelago-macOS-arm64${TAG}\") | .id")
           gh api "repos/$REPO/actions/artifacts/$ARTIFACT_ID/zip" > macos-arm64.zip
           unzip macos-arm64.zip -d macos-arm64-out
-          mv "macos-arm64-out/PokeRogueOffline${TAG}-arm64.dmg" "./PokeRogueOffline${TAG}-arm64.dmg"
+          mv "macos-arm64-out/PokeRogueArchipelago${TAG}-arm64.dmg" "./PokeRogueArchipelago${TAG}-arm64.dmg"
 
 
       # -----------------------------------------------------------------------
@@ -409,32 +409,32 @@ jobs:
         if: ${{ steps.gate.outputs.is_release != 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: PokeRogueOffline-AppImage-v${{ steps.version.outputs.version }}-${{ steps.build.outputs.number }}
-          path: PokeRogueOffline${{ steps.suffix.outputs.tag }}.AppImage
+          name: PokeRogueArchipelago-AppImage-v${{ steps.version.outputs.version }}-${{ steps.build.outputs.number }}
+          path: PokeRogueArchipelago${{ steps.suffix.outputs.tag }}.AppImage
           retention-days: 30
 
       - name: Upload Windows artifact
         if: ${{ steps.gate.outputs.is_release != 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: PokeRogueOffline-Windows-v${{ steps.version.outputs.version }}-${{ steps.build.outputs.number }}
-          path: PokeRogueOffline${{ steps.suffix.outputs.tag }}.exe
+          name: PokeRogueArchipelago-Windows-v${{ steps.version.outputs.version }}-${{ steps.build.outputs.number }}
+          path: PokeRogueArchipelago${{ steps.suffix.outputs.tag }}.exe
           retention-days: 30
 
       - name: Upload macOS x64 artifact
         if: ${{ steps.gate.outputs.is_release != 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: PokeRogueOffline-macOS-x64-v${{ steps.version.outputs.version }}-${{ steps.build.outputs.number }}
-          path: PokeRogueOffline${{ steps.suffix.outputs.tag }}-x64.dmg
+          name: PokeRogueArchipelago-macOS-x64-v${{ steps.version.outputs.version }}-${{ steps.build.outputs.number }}
+          path: PokeRogueArchipelago${{ steps.suffix.outputs.tag }}-x64.dmg
           retention-days: 30
 
       - name: Upload macOS arm64 artifact
         if: ${{ steps.gate.outputs.is_release != 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: PokeRogueOffline-macOS-arm64-v${{ steps.version.outputs.version }}-${{ steps.build.outputs.number }}
-          path: PokeRogueOffline${{ steps.suffix.outputs.tag }}-arm64.dmg
+          name: PokeRogueArchipelago-macOS-arm64-v${{ steps.version.outputs.version }}-${{ steps.build.outputs.number }}
+          path: PokeRogueArchipelago${{ steps.suffix.outputs.tag }}-arm64.dmg
           retention-days: 30
 
       # -----------------------------------------------------------------------
@@ -455,18 +455,18 @@ jobs:
 
             - **PokeRogueOffline.ipa** — iOS (sideload via SideStore / LiveContainer / Feather)
             - **PokeRogueOffline.apk** — Android (sideload by enabling "Install unknown apps")
-            - **PokeRogueOffline.AppImage** — Linux AppImage
-            - **PokeRogueOffline.exe** — Windows Portable EXE
-            - **PokeRogueOffline-x64.dmg** — macOS (Intel)
-            - **PokeRogueOffline-arm64.dmg** — macOS (Apple Silicon)
+            - **PokeRogueArchipelago.AppImage** — Linux AppImage
+            - **PokeRogueArchipelago.exe** — Windows Portable EXE
+            - **PokeRogueArchipelago-x64.dmg** — macOS (Intel)
+            - **PokeRogueArchipelago-arm64.dmg** — macOS (Apple Silicon)
 
           files: |
             PokeRogueOffline.ipa
             PokeRogueOffline.apk
-            PokeRogueOffline.AppImage
-            PokeRogueOffline.exe
-            PokeRogueOffline-x64.dmg
-            PokeRogueOffline-arm64.dmg
+            PokeRogueArchipelago.AppImage
+            PokeRogueArchipelago.exe
+            PokeRogueArchipelago-x64.dmg
+            PokeRogueArchipelago-arm64.dmg
 
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

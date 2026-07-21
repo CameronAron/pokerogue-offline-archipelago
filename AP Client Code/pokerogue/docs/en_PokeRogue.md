@@ -3,106 +3,96 @@
 ## Where is the options page?
 
 The [player options page](../player-options) has all the options you need to
-configure and export a config file.
+configure and export a config file. Options are grouped into **Sanities**
+(Dexsanity, its cost exclusion, Progressive Level Cap) and **Starters**
+(random vs. curated, how many).
 
 ## What does randomization do to this game?
 
-Two things change.
+**You have to earn the right to use each Pokemon -- but only when Dexsanity
+is on.** With it on, every species starts locked; the starter select screen
+refuses any species you haven't been granted, the same way it already
+refuses any species you've never caught. Catching something during a run
+still works, but it won't join your party until its unlock item arrives.
+With Dexsanity off, none of this applies -- you catch and use Pokemon exactly
+like vanilla PokeRogue.
 
-**You have to earn the right to use each Pokemon.** Every species starts
-locked. The starter select screen refuses any species you have not been
-granted, exactly the way it already refuses any species you have never
-caught -- unlocking a species is what makes the game consider it caught. You
-begin with a small number of species (three by default) so you can actually
-start a run.
+**Progress sends checks.** Wave milestones (every 10 waves of Classic mode by
+default) always send checks. Catching a species for the first time also
+sends one, but only when Dexsanity is on.
 
-**Progress sends checks.** How this works depends on whether Dexsanity is on.
+## The two independent Sanities
 
-## The two modes
+**Dexsanity** and **Progressive Level Cap** are separate toggles -- turn on
+either, both, or neither.
 
-### Dexsanity on (default)
+- **Dexsanity on**: every species is in play. Catching one for the first time
+  sends a check; the matching item lets you field it.
+- **Dexsanity off**: your roster grows through normal catching, exactly like
+  vanilla. No species checks exist.
+- **Progressive Level Cap on**: every wave-milestone check instead sends a
+  copy of a Progressive Level Cap item. Each copy raises your Classic-mode
+  level cap by one tier, following the same 20-tier table (level 10 through
+  level 200) the base game's own automatic cap uses. **Rare Candy still
+  bypasses the cap entirely**, exactly like vanilla -- it never goes through
+  the capped code path in the first place.
+- **Progressive Level Cap off**: wave checks send ordinary filler (or, with
+  Dexsanity also on, they're separate from the species pool entirely).
 
-Every species in the game is in play. Catching a species for the first time in
-a run sends a check, and receiving that species' unlock item is what lets you
-actually use it -- catching and unlocking are separate: catching sends the
-check, the item is what the multiworld sends back to let you field it. Wave
-milestones (every 10 waves of Classic by default) send additional checks.
+### Protecting rare species from gating other players
 
-### Dexsanity off
+**Dexsanity Exclude Above Cost** (default 8) keeps species above that starter
+cost -- the legendaries and rarest mons -- from ever holding an item that
+matters somewhere else. Their dexsanity location still exists and can hold an
+ordinary filler item, it just can't be the location standing between someone
+and something they need. Lower it to protect more species, or raise it to 10
+to disable the protection entirely.
 
-Your roster is fixed to your starting species for the whole game -- nothing
-else can ever be unlocked, since there's no dexsanity pool to draw more
-species items from. Wave milestones still send checks, but instead of species
-unlocks, each one sends a **Progressive Level Cap** item.
+## Starters
 
-Progressive Level Cap mirrors PokeRogue's own vanilla level cap system, which
-normally raises automatically every 10 waves. In this mode, each copy you
-receive raises your cap by one tier instead, following the same 20-tier table
-the base game uses (level 10 at the start, up to level 200 for the wave 200
-final boss). **Rare Candies still bypass the cap entirely**, exactly like in
-vanilla -- Progressive Level Cap only affects normal experience-based leveling.
+**Random Starters** (on by default) draws your starting species from
+everything in the game. Turn it off to draw from the same 27 species (three
+per generation) a real fresh PokeRogue account starts with, under the same
+10-point combined cost cap the game's own starter-select screen enforces.
+Curated starters also skip their own dexsanity check, since vanilla already
+counts them as caught from the moment the save exists.
 
-This mode plays very differently: no Pokemon-collecting meta, just your
-starting team and a pacing challenge.
+**Starting Species** controls how many you begin with. In curated mode this
+is capped by the 10-point budget -- every curated species costs 3 or 4, so 4+
+species is mathematically impossible under that budget, and you'll get as
+many as fit with a warning at generation.
 
 ## What is the goal?
 
-Beat Classic mode: clear wave 200 by defeating Eternamax Eternatus.
-
-Shorter goals (wave 50, 100, 150) are available for testing or for async games
-that need to fit in less time. With a shorter goal you complete as soon as you
-*reach* that wave, rather than having to kill a final boss.
-
-## What items and locations get shuffled?
-
-**Locations** are:
-
-- **Wave milestones** -- one check every N waves of Classic mode (10 by
-  default), up to but not including your goal wave.
-- **Dexsanity** (Dexsanity mode only) -- one check for the first time you
-  catch each species. Catching an evolved form counts for its whole line, so
-  catching a Venusaur credits Bulbasaur.
-
-**Items** are:
-
-- **Species unlocks** (Dexsanity mode only) -- one per species in the game.
-  These are the progression items.
-- **Progressive Level Cap** (non-Dexsanity mode only) -- one copy per wave
-  milestone. Also progression.
-- **Filler** -- Rare Candies, ball packs, money, egg vouchers, Exp Charms and
-  similar, used to pad out Dexsanity mode's item pool. Currently placeholders;
-  see the caveat below.
+Beat Classic mode: clear wave 200 by defeating Eternamax Eternatus. Shorter
+goals (wave 50, 100, 150) are available for testing or async games; with a
+shorter goal you complete as soon as you've cleared that wave.
 
 ## Which items can be in another player's world?
 
-Any of them. Species unlocks, Progressive Level Cap, and filler all shuffle
-freely into the multiworld.
+Any of them -- species unlocks, Progressive Level Cap copies, and filler all
+shuffle freely into the multiworld, subject to the exclusion protection above.
 
 ## What does another world's item look like in PokeRogue?
 
-There is no in-game item model, so items are not represented on the field.
+There's no in-game item model, so items aren't represented on the field.
 Received items are reported by the PokeRogue client and take effect
-immediately: a newly unlocked species becomes selectable in starter select
-right away, and a new Progressive Level Cap copy raises your cap on your next
-level-up check.
+immediately.
 
 ## When the player receives an item, what happens?
 
-Species unlocks and Progressive Level Cap both apply immediately.
-
-**Filler items are currently placeholders.** They are named after real
-PokeRogue consumables and they occupy item-pool slots correctly, but the
-current version of the bridge does not inject them into a running save. They
-are logged by the client and nothing more.
+Species unlocks and Progressive Level Cap both apply immediately. **Filler
+items are currently placeholders** -- they occupy pool slots correctly and
+balance the item count, but the bridge doesn't inject them into a running
+save yet.
 
 ## Unique local commands
 
-The PokeRogue client supports these in addition to the standard ones:
-
-- `/bridge` -- show whether the game is connected, and whether a PokeRogue
-  process is running at all.
-- `/unlocked` -- list every species you have been granted so far.
-- `/levelcap` -- show your current level cap tier (non-Dexsanity mode).
+- `/bridge` -- whether the game is connected, and whether a PokeRogue process
+  is running at all.
+- `/unlocked` -- species you've been granted so far.
+- `/pending` -- species with a dexsanity check you haven't caught yet.
+- `/levelcap` -- your current Classic-mode level cap tier.
 - `/resync` -- force a full state push to the game.
 
 ## Known limitations
@@ -111,6 +101,10 @@ The PokeRogue client supports these in addition to the standard ones:
 - DeathLink is one-directional in practice: losing a run sends a death, but
   receiving one only shows a message. PokeRogue has no safe way to end a run
   from outside without risking save corruption.
-- Species data is generated from a specific game version. If your game is much
-  newer than the apworld, newly added species will simply be absent from the
-  pool rather than causing an error.
+- Wild encounter species are not biased toward what you still need to catch.
+  PokeRogue's encounters are drawn from a single seeded RNG stream shared
+  with every other random event in a run, and safely nudging that stream
+  from outside isn't something that can be verified without extensive
+  play-testing this project hasn't done. `dexsanity_exclude_above_cost`
+  protects other players from being gated by a rare species; it doesn't make
+  that species spawn more often.

@@ -71,6 +71,14 @@ USEFUL_FILLER_NAMES = (
     "Berry Bundle",
 )
 
+#: Strictly ItemClassification.filler entries -- no useful/progression flags.
+#: Excluded locations (see dexsanity_exclude_above_cost) can only ever hold a
+#: plain filler item, so __init__.py uses this list to guarantee enough of
+#: them exist for however many locations get excluded, rather than leaving it
+#: to chance via the normal weighted filler roll (which includes useful
+#: entries like Master Ball that an excluded location cannot legally hold).
+PURE_FILLER_NAMES = tuple(f.name for f in FILLER_ITEMS if f.classification == ItemClassification.filler)
+
 
 def species_item_name(display: str) -> str:
     return f"{display} Unlock"
@@ -94,10 +102,23 @@ ITEM_NAME_TO_ID: dict[str, int] = {
 }
 
 #: name -> classification, for everything above.
+#
+# Species unlocks are `useful` rather than `progression`: nothing in this
+# world's logic (a single flat region, no access rules) actually depends on
+# having a species unlocked to reach anything, so `progression` would
+# overstate their importance to the fill algorithm and to progression
+# balancing. `useful` still protects them from excluded/unreachable
+# locations and marks them desirable, without the false claim.
+#
+# Progressive Level Cap uses `progression | useful` -- AP has no literal tier
+# above `progression`, but this combined flag is described in BaseClasses.py
+# itself as "an especially useful progression item" and is the strongest
+# classification the fill algorithm actually offers, which is the closest
+# real equivalent to "mark this more important than plain progression".
 ITEM_CLASSIFICATION: dict[str, ItemClassification] = {
-    **{n: ItemClassification.progression for n in SPECIES_ITEMS},
+    **{n: ItemClassification.useful for n in SPECIES_ITEMS},
     **{f.name: f.classification for f in FILLER_ITEMS},
-    PROGRESSIVE_LEVEL_CAP_ITEM: ItemClassification.progression,
+    PROGRESSIVE_LEVEL_CAP_ITEM: ItemClassification.progression | ItemClassification.useful,
 }
 
 #: item name -> numeric SpeciesId, for the client to act on.

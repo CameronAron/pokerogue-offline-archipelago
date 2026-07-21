@@ -28,26 +28,6 @@ class GoalWave(Choice):
         return int(self.value)
 
 
-class Dexsanity(DefaultOnToggle):
-    """Adds a check for catching each species, and sends every species as an item.
-
-    Turning this off replaces species-hunting with Progressive Level Cap items
-    instead: your roster stays fixed at your starting species, and each wave
-    check raises your Classic-mode level cap by one tier.
-    """
-
-    display_name = "Dexsanity"
-
-
-class StartingSpecies(Range):
-    """How many species you start the game with unlocked."""
-
-    display_name = "Starting Species"
-    range_start = 1
-    range_end = 6
-    default = 3
-
-
 class WaveCheckInterval(Range):
     """Sends a check every this many waves of Classic mode, up to your goal wave."""
 
@@ -55,6 +35,35 @@ class WaveCheckInterval(Range):
     range_start = 5
     range_end = 25
     default = 10
+
+
+# ------------------------------------------------------------------ Sanities
+
+class Dexsanity(DefaultOnToggle):
+    """Adds a check for catching each species, and sends every species as an item.
+
+    Every species starts locked; the matching item is what lets you field it.
+    Catching an evolved form also credits every species below it in its
+    evolution line.
+    """
+
+    display_name = "Dexsanity"
+
+
+class DexsanityExcludeAboveCost(Range):
+    """Species above this starter cost never hold a check required for anything else.
+
+    Their dexsanity location still exists and can hold a useful/filler item,
+    it just won't be picked to hold something another location needs. Lowering
+    this protects against needing to hunt a specific rare or hard-to-reach
+    species (a max-cost legendary, for instance) before anyone can progress.
+    Set to 10 to disable this protection entirely.
+    """
+
+    display_name = "Dexsanity Exclude Above Cost"
+    range_start = 1
+    range_end = 10
+    default = 8
 
 
 class SplitDexsanityRewards(Toggle):
@@ -66,12 +75,53 @@ class SplitDexsanityRewards(Toggle):
     display_name = "Useful Dexsanity Rewards"
 
 
+class ProgressiveLevelCap(Toggle):
+    """Sends a Progressive Level Cap item on every wave check instead of a normal reward.
+
+    Each copy raises your Classic-mode level cap by one tier, following the
+    same 20-tier table the base game's automatic cap uses. Rare Candy still
+    bypasses the cap entirely, same as vanilla. Independent of Dexsanity --
+    combine both, either alone, or neither.
+    """
+
+    display_name = "Progressive Level Cap"
+
+
+# ------------------------------------------------------------------ Starters
+
+class RandomStarters(DefaultOnToggle):
+    """Draws your starting species from every species in the game.
+
+    Turning this off instead draws from the same 27 species (the first three
+    of each generation) that a real fresh PokeRogue account starts with.
+    """
+
+    display_name = "Random Starters"
+
+
+class StartingSpecies(Range):
+    """How many species you start the game with unlocked.
+
+    When Random Starters is off, this is capped by the vanilla 10-point
+    starter cost budget -- if you ask for more than the curated 27-species
+    pool can afford, you'll get as many as fit and a warning during generation.
+    """
+
+    display_name = "Starting Species"
+    range_start = 1
+    range_end = 6
+    default = 3
+
+
 @dataclass
 class PokeRogueOptions(PerGameCommonOptions):
     goal_wave: GoalWave
-    dexsanity: Dexsanity
-    starting_species: StartingSpecies
     wave_check_interval: WaveCheckInterval
+    dexsanity: Dexsanity
+    dexsanity_exclude_above_cost: DexsanityExcludeAboveCost
     split_dexsanity_rewards: SplitDexsanityRewards
+    progressive_level_cap: ProgressiveLevelCap
+    random_starters: RandomStarters
+    starting_species: StartingSpecies
     death_link: DeathLink
     start_inventory_from_pool: StartInventoryPool

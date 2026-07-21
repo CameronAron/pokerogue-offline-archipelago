@@ -1,4 +1,4 @@
-name: Build PokeRogueOffline AppImage
+name: Build PokeRogue Archipelago AppImage
 
 on:
   workflow_dispatch:
@@ -126,7 +126,7 @@ jobs:
         run: |
           node -e "
             const pkg = require('./package.json');
-            if (!pkg.description) pkg.description = 'PokeRogue Offline';
+            if (!pkg.description) pkg.description = 'PokeRogue Archipelago';
             if (!pkg.author) pkg.author = 'Scooom';
             pkg.main = 'main.cjs';
             require('fs').writeFileSync('./package.json', JSON.stringify(pkg, null, 2));
@@ -154,9 +154,9 @@ jobs:
         run: |
           FILE=$(find -type f -name "*.AppImage")
           if [ "${{ inputs.dev }}" = "true" ]; then
-            OUTPUT="./PokeRogueOffline-dev.AppImage"
+            OUTPUT="./PokeRogueArchipelago-dev.AppImage"
           else
-            OUTPUT="./PokeRogueOffline.AppImage"
+            OUTPUT="./PokeRogueArchipelago.AppImage"
           fi
           mv "$FILE" "$OUTPUT"
           echo "AppImage=$OUTPUT" >> $GITHUB_OUTPUT
@@ -164,6 +164,6 @@ jobs:
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PokeRogueOffline-AppImage${{ inputs.dev && '-dev' || '' }}
+          name: PokeRogueArchipelago-AppImage${{ inputs.dev && '-dev' || '' }}
           path: ${{ steps.appimage_path.outputs.AppImage }}
           retention-days: 30

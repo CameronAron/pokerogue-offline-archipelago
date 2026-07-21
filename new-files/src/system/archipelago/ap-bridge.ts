@@ -12,30 +12,45 @@
  * Design notes
  * ------------
  * Almost everything here is *polled* off `globalScene` rather than hooked into
- * game internals. PokeRogue's `main` branch moves fast, and a poller that reads
- * public state degrades gracefully across versions where a patched call site
- * would simply fail to apply. The only real source patch left is the victory/
- * defeat notify in game-over-phase.ts -- everything else, including the
- * species lock and the level cap, is done by this module driving the game's
- * own data structures directly, which means the game's own UI enforces
- * everything for free instead of needing a second parallel gate.
+ * game internals, because polling public state survives upstream churn far
+ * better than a pile of regex anchors would. Three things cannot be done this
+ * way, and are the only real source anchors across the whole patch set: the
+ * Classic victory/defeat notify in game-over-phase.ts, the party-add refusal
+ * in field/pokemon.ts (see apCanAddToParty), and the "still needs catching"
+ * icon in enemy-battle-info.ts (see apNeedsCatch). Everything else -- the
+ * species lock, the level cap, dexsanity detection -- is this module driving
+ * the game's own data structures directly.
  *
- * The species gate specifically: PokeRogue already refuses to let you select
- * an uncaught species as a starter (`dexData[id].caughtAttr === 0n`). Rather
- * than add a second condition next to that check, this module *drives*
- * caughtAttr directly -- granting it for AP-unlocked species and forcing it to
- * zero for everything else, every poll tick. That means the vanilla UI's own
- * gating becomes the enforcement, with no source patch needed for it at all,
- * and it correctly overrides PokeRogue's own free starter bootstrap (a fixed
- * handful of species come pre-caught on every new save).
+ * The species gate: PokeRogue already refuses to let you select an uncaught
+ * species as a starter (`dexData[id].caughtAttr === 0n`). Rather than add a
+ * second condition next to that check, this module *drives* caughtAttr
+ * directly -- granting it for AP-unlocked species and forcing it to zero for
+ * everything else, every poll tick. That means the vanilla UI's own gating
+ * becomes the enforcement, with no source patch needed for starter select at
+ * all, and it correctly overrides PokeRogue's own free starter bootstrap (a
+ * fixed handful of species come pre-caught on every new save).
+ *
+ * The gate is only active when Dexsanity is on. With it off there is no
+ * species pool to grow from -- catching and using Pokemon works exactly like
+ * vanilla, and the only Archipelago mechanic left is Progressive Level Cap
+ * (which is its own independent toggle; see installLevelCapOverride).
  *
  * Dexsanity catch-detection intentionally reads `caughtCount`, not
  * `caughtAttr`. `caughtCount` only increments through a real in-run catch
- * (see `setPokemonSpeciesCaught` in the game source) -- never through the
- * vanilla free-starter bootstrap and never through this module's own grants.
- * That keeps "did the player actually catch one" fully decoupled from "is
- * this species currently allowed", so the two mechanisms can run every tick
- * without ordering concerns or false-positive checks.
+ * (see `setPokemonSpeciesCaught` in the game source, including its recursive
+ * walk up the evolution line -- catching an evolved form credits every
+ * prevolution's `caughtCount` too) -- never through the vanilla free-starter
+ * bootstrap and never through this module's own grants. That keeps "did the
+ * player actually catch one" fully decoupled from "is this species currently
+ * allowed", so the two mechanisms can run every tick with no ordering
+ * concerns or false-positive checks.
+ *
+ * A save carried over from a different multiworld (or from non-AP play) is
+ * handled by tagging localStorage with the connected room's seed_name: the
+ * first time a new or different seed_name is seen, the currently-caught set
+ * is captured as a silent baseline instead of being reported, so switching
+ * multiworlds on the same save doesn't instantly fire someone else's catch
+ * history as checks. See establishBaselineIfNeeded.
  *
  * All reporting is idempotent: we send the *current* state (every caught
  * species, the current wave) rather than deltas, and the client de-duplicates
@@ -45,12 +60,15 @@
 
 import { AbilityAttr } from "#enums/ability-attr";
 import { DexAttr } from "#enums/dex-attr";
+import { SpeciesId } from "#enums/species-id";
 import { globalScene } from "#app/global-scene";
 
-const BRIDGE_VERSION = "0.2.0";
+const BRIDGE_VERSION = "0.3.0";
 const DEFAULT_PORT = 17777;
 const POLL_INTERVAL_MS = 1000;
 const RECONNECT_DELAY_MS = 3000;
+const SEED_TAG_KEY = "ap_seed_tag";
+const AP_CHECK_TEXTURE_KEY = "ap_needs_catch_icon";
 
 /** The same bitmask PokeRogue itself grants to `defaultStarterSpecies` on a
  * fresh save (see `initDexData`): non-shiny, either gender, default variant
@@ -59,6 +77,8 @@ const RECONNECT_DELAY_MS = 3000;
 const GRANT_DEX_ATTR: bigint =
   DexAttr.NON_SHINY | DexAttr.MALE | DexAttr.FEMALE | DexAttr.DEFAULT_VARIANT | DexAttr.DEFAULT_FORM;
 const GRANT_ABILITY_ATTR: number = AbilityAttr.ABILITY_1;
+/** Matches the 15/15/15/15/15/15 vanilla defaultStarterSpecies also get. */
+const GRANT_IVS: readonly number[] = [15, 15, 15, 15, 15, 15];
 
 /** Overridable for testing / non-default ports via localStorage. */
 function bridgePort(): number {
@@ -79,30 +99,38 @@ function bridgePort(): number {
 interface ApState {
   connected: boolean;
   slot: string | null;
+  seedName: string | null;
   goalWave: number;
   dexsanity: boolean;
+  progressiveLevelCap: boolean;
   deathLink: boolean;
   /** Species the player may currently use. Sole source of truth for the gate. */
   unlocked: Set<number>;
-  /** Every species the gate manages at all, regardless of mode. */
+  /** Every species the gate manages at all. Empty/unused when dexsanity is off. */
   allStarters: Set<number>;
   /** Species that have a dexsanity check attached (empty when dexsanity is off). */
   dexsanitySpecies: Set<number>;
+  /** Species with a dexsanity check that hasn't fired yet -- drives the
+   * "still needs catching" icon. */
+  pendingDexsanitySpecies: Set<number>;
   /** Copies of Progressive Level Cap received so far. */
   levelCapCount: number;
-  /** Vanilla wave-block level cap values, tier 1 first. Empty when dexsanity is on. */
+  /** Vanilla wave-block level cap values, tier 1 first. Empty when the option is off. */
   levelCapTiers: number[];
 }
 
 const state: ApState = {
   connected: false,
   slot: null,
+  seedName: null,
   goalWave: 200,
   dexsanity: true,
+  progressiveLevelCap: false,
   deathLink: false,
   unlocked: new Set<number>(),
   allStarters: new Set<number>(),
   dexsanitySpecies: new Set<number>(),
+  pendingDexsanitySpecies: new Set<number>(),
   levelCapCount: 0,
   levelCapTiers: [],
 };
@@ -114,6 +142,9 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 /** Last catch set we reported, so we only send on change. */
 let lastReportedCaught = new Set<number>();
 let lastReportedWave = -1;
+/** Set when a new/different seed_name is seen; consumed on the next poll to
+ * silently snapshot current catches instead of reporting them. */
+let needsBaselineSnapshot = false;
 
 // ─────────────────────────────────────────────────────────────── public API
 
@@ -127,23 +158,49 @@ export function apIsActive(): boolean {
   return state.connected;
 }
 
+/** Whether the species gate is enforcing anything at all right now. False
+ * with no AP session, and false whenever Dexsanity is off -- in that mode
+ * there is nothing to grow the roster with, so catching and using Pokemon
+ * works exactly like vanilla instead of being gated. */
+function gateActive(): boolean {
+  return state.connected && state.dexsanity;
+}
+
 /** Whether the player is currently allowed to use this species. Read-only;
- * the gate itself is enforced by writing dexData directly (see below), so
- * nothing needs to call this to block a selection anymore. Exposed for any
- * future UI (e.g. a locked-species indicator) that wants to read it. */
+ * the gate itself is enforced by writing dexData directly (see below) and by
+ * apCanAddToParty for in-run catches, so nothing needs to call this to block
+ * a selection. Exposed for any future UI that wants to read it. */
 export function apIsSpeciesUnlocked(speciesId: number): boolean {
-  if (!state.connected) {
+  if (!gateActive()) {
     return true;
   }
   return state.unlocked.has(speciesId);
 }
 
-/** Short label explaining why a species is unavailable, for a future tooltip. */
-export function apLockReason(speciesId: number): string | null {
-  if (!state.connected || !state.allStarters.has(speciesId)) {
-    return null;
+/** Called from the patched `PlayerPokemon.addToParty` to decide whether a
+ * catch is allowed to actually join the party. Returning false leaves the
+ * catch animation and ball-throw untouched (see the patch site) -- the
+ * Pokemon is just never added, exactly like PokeRogue's own "party is full"
+ * case already behaves, so no new failure mode is introduced. */
+export function apCanAddToParty(speciesId: number): boolean {
+  return apIsSpeciesUnlocked(speciesId);
+}
+
+/** Called alongside a blocked catch so the *client's* log can tell the player
+ * what happened -- an in-game popup risks interfering with the capture
+ * phase's own careful UI sequencing, so this is deliberately a side-channel
+ * notification rather than a showText call inserted into that flow. */
+export function apNotifyLockedCatch(speciesId: number): void {
+  send({ cmd: "LockedCatch", speciesId, speciesName: SpeciesId[speciesId] ?? null });
+}
+
+/** Whether this species still has an uncompleted dexsanity check. Drives the
+ * "you should catch this" icon; see enemy-battle-info.ts's patch site. */
+export function apNeedsCatch(speciesId: number): boolean {
+  if (!state.connected || !state.dexsanity) {
+    return false;
   }
-  return state.unlocked.has(speciesId) ? null : "Locked - unlock item not yet received";
+  return state.pendingDexsanitySpecies.has(speciesId);
 }
 
 /** Called by the patched GameOverPhase on a Classic victory. */
@@ -230,23 +287,71 @@ function resetReportCache(): void {
   lastReportedCaught = new Set<number>();
 }
 
+/**
+ * Tag localStorage with the connected room's seed_name. The first time a
+ * new or different seed_name shows up, flag that the next dexsanity scan
+ * should silently baseline instead of reporting -- otherwise reconnecting an
+ * existing save to a *different* multiworld (or resuming non-AP play) would
+ * instantly fire every already-caught species as a check.
+ *
+ * Deliberately does nothing when seed_name is absent (older servers) or when
+ * it matches what's already tagged -- both cases mean "keep reporting
+ * normally".
+ */
+function establishBaselineIfNeeded(seedName: string | null): void {
+  if (!seedName) {
+    return;
+  }
+  let storedTag: string | null = null;
+  try {
+    storedTag = localStorage.getItem(SEED_TAG_KEY);
+  } catch {
+    return; // no localStorage access; nothing safe to do here
+  }
+  if (storedTag === seedName) {
+    return;
+  }
+  needsBaselineSnapshot = true;
+  try {
+    localStorage.setItem(SEED_TAG_KEY, seedName);
+  } catch {
+    /* ignore */
+  }
+  try {
+    console.info(
+      `[Archipelago] New multiworld detected (${seedName}). Baselining existing catch ` +
+        "history on this save -- only new catches from here on will send checks.",
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
 function handleMessage(msg: Record<string, any>): void {
   switch (msg.cmd) {
     case "State": {
       state.connected = Boolean(msg.connected);
       state.slot = msg.slot ?? null;
+      state.seedName = msg.seed_name ?? null;
       state.goalWave = Number(msg.goal_wave ?? 200);
       state.dexsanity = Boolean(msg.dexsanity);
+      state.progressiveLevelCap = Boolean(msg.progressive_level_cap);
       state.deathLink = Boolean(msg.death_link);
       state.unlocked = new Set<number>((msg.unlocked_species ?? []).map(Number));
       state.allStarters = new Set<number>((msg.all_starter_species ?? []).map(Number));
       state.dexsanitySpecies = new Set<number>(
         Object.keys(msg.dexsanity_species ?? {}).map(Number),
       );
+      state.pendingDexsanitySpecies = new Set<number>(
+        (msg.pending_dexsanity_species ?? []).map(Number),
+      );
       state.levelCapCount = Number(msg.level_cap_count ?? 0);
       state.levelCapTiers = (msg.level_cap_tiers ?? []).map(Number);
+
+      establishBaselineIfNeeded(state.seedName);
       // A fresh state push may reveal checks we never reported (e.g. the
-      // client restarted); clear the cache so the next poll re-reports.
+      // client restarted); clear the cache so the next poll re-reports (or
+      // re-baselines, if establishBaselineIfNeeded just flagged that).
       resetReportCache();
       break;
     }
@@ -310,10 +415,16 @@ function collectCaughtSpecies(gameData: any): Set<number> {
 }
 
 /**
- * Grant or lock every species the gate manages, every tick.
+ * Grant or lock every species the gate manages, every tick. No-ops entirely
+ * when the gate isn't active (Dexsanity off, or no AP session) -- see
+ * gateActive.
  *
  * Grant: OR in the baseline "usable starter" bits, never subtracting from
- * whatever the game already recorded through real play.
+ * whatever the game already recorded through real play. IVs are set to
+ * 15/15/15/15/15/15 -- matching vanilla's own defaultStarterSpecies bootstrap
+ * -- but only if they're still the untouched all-zero state, so a species
+ * that was legitimately caught with rolled IVs before being granted keeps
+ * those instead of being overwritten.
  *
  * Lock: force caughtAttr to zero, regardless of how it got set -- the vanilla
  * bootstrap, a real catch of an as-yet-ungranted species, or a previous
@@ -325,6 +436,9 @@ function collectCaughtSpecies(gameData: any): Set<number> {
  * is cosmetic and does not affect selectability.
  */
 function enforceSpeciesGate(gameData: any): void {
+  if (!gateActive()) {
+    return;
+  }
   const dexData = gameData?.dexData;
   const starterData = gameData?.starterData;
   if (!dexData || !starterData) {
@@ -339,6 +453,9 @@ function enforceSpeciesGate(gameData: any): void {
 
     if (state.unlocked.has(speciesId)) {
       dexEntry.caughtAttr = BigInt(dexEntry.caughtAttr ?? 0) | GRANT_DEX_ATTR;
+      if (Array.isArray(dexEntry.ivs) && dexEntry.ivs.every((iv: number) => Number(iv) === 0)) {
+        dexEntry.ivs = [...GRANT_IVS];
+      }
       const starterEntry = starterData[speciesId];
       if (starterEntry) {
         starterEntry.abilityAttr = Number(starterEntry.abilityAttr ?? 0) | GRANT_ABILITY_ATTR;
@@ -352,9 +469,9 @@ function enforceSpeciesGate(gameData: any): void {
 /**
  * Install (once) a wrapper around `globalScene.getMaxExpLevel` that clamps
  * the result to the AP-granted level cap tier when Progressive Level Cap is
- * active. Left untouched -- returns the vanilla wave-based value -- when
- * dexsanity is on, when the caller explicitly asked to ignore the cap (this
- * is how Rare Candy already bypasses it in vanilla), or before AP connects.
+ * on. Left untouched -- returns the vanilla wave-based value -- when the
+ * option is off, when the caller explicitly asked to ignore the cap (this is
+ * how Rare Candy already bypasses it in vanilla), or before AP connects.
  *
  * This patches the live scene instance rather than the source, since
  * `getMaxExpLevel` is a pure function of public state; wrapping the bound
@@ -370,13 +487,50 @@ function installLevelCapOverride(s: any): void {
   const original: (ignoreLevelCap?: boolean) => number = s.getMaxExpLevel.bind(s);
   s.getMaxExpLevel = (ignoreLevelCap = false): number => {
     const vanilla = original(ignoreLevelCap);
-    if (ignoreLevelCap || !state.connected || state.levelCapTiers.length === 0) {
+    if (ignoreLevelCap || !state.connected || !state.progressiveLevelCap || state.levelCapTiers.length === 0) {
       return vanilla;
     }
     const tier = Math.min(state.levelCapCount, state.levelCapTiers.length - 1);
     return Math.min(vanilla, state.levelCapTiers[tier]);
   };
   s.__apLevelCapPatched = true;
+}
+
+/**
+ * Register a small canvas-drawn "still needs catching" icon texture, so
+ * enemy-battle-info.ts's patch has something to show without this project
+ * needing to ship a new art asset through the build. Idempotent; safe to
+ * call every poll tick.
+ */
+function ensureNeedsCatchTexture(s: any): void {
+  try {
+    if (!s?.textures || s.textures.exists(AP_CHECK_TEXTURE_KEY)) {
+      return;
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = 16;
+    canvas.height = 16;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return;
+    }
+    ctx.fillStyle = "#3ddc55";
+    ctx.beginPath();
+    ctx.arc(8, 8, 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(4.5, 8.5);
+    ctx.lineTo(7, 11);
+    ctx.lineTo(11.5, 4.5);
+    ctx.stroke();
+    s.textures.addCanvas(AP_CHECK_TEXTURE_KEY, canvas);
+  } catch {
+    /* devtools/headless contexts without a real canvas; icon just won't show */
+  }
 }
 
 function poll(): void {
@@ -390,17 +544,23 @@ function poll(): void {
   }
 
   installLevelCapOverride(s);
+  ensureNeedsCatchTexture(s);
 
   // ── Dexsanity ────────────────────────────────────────────────────────────
   if (state.dexsanity) {
     try {
       const caught = collectCaughtSpecies(s.gameData);
-      for (const speciesId of caught) {
-        if (!lastReportedCaught.has(speciesId)) {
-          send({ cmd: "Catch", speciesId });
+      if (needsBaselineSnapshot) {
+        lastReportedCaught = caught;
+        needsBaselineSnapshot = false;
+      } else {
+        for (const speciesId of caught) {
+          if (!lastReportedCaught.has(speciesId)) {
+            send({ cmd: "Catch", speciesId });
+          }
         }
+        lastReportedCaught = caught;
       }
-      lastReportedCaught = caught;
     } catch {
       /* dex not ready yet */
     }
@@ -448,6 +608,7 @@ function start(): void {
       state,
       isActive: apIsActive,
       isSpeciesUnlocked: apIsSpeciesUnlocked,
+      needsCatch: apNeedsCatch,
       resync: () => send({ cmd: "Sync" }),
     };
   } catch {
