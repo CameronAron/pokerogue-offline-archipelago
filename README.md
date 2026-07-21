@@ -32,19 +32,11 @@ it to a multiworld, are in the
 ## Getting started
 
 1. Install [Archipelago](https://github.com/ArchipelagoMW/Archipelago/releases).
-2. Drop `pokerogue.apworld` (in `AP Client Code/`) into Archipelago's
+2. Drop `pokerogue.apworld` from `releases` into Archipelago's
    `custom_worlds` folder.
-3. Build this repo following your platform's workflow under
-   `.github/workflows/` (or run one via the Actions tab).
-4. Follow the [setup guide](AP%20Client%20Code/pokerogue/docs/setup_en.md) to
+3. Follow the [setup guide](AP%20Client%20Code/pokerogue/docs/setup_en.md) to
    generate a seed and connect.
 
-## Building without Archipelago
-
-This repo works as a plain offline PokéRogue build too -- the Archipelago
-bridge only activates when a client actually connects. If you just want an
-offline PokéRogue install, follow the same build workflows; nothing about
-normal play changes.
 
 ## Credits
 
