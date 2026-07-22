@@ -3,7 +3,7 @@
 ID layout (item namespace):
     BASE + <species_id>        species unlock items  (species_id <= 8901)
     BASE + 90000 + <n>         filler / trap items
-    BASE + 91000                Progressive Level Cap (dexsanity-off mode only)
+    BASE + 91000                Progressive EXP Gain (independent toggle)
 """
 
 from typing import NamedTuple
@@ -16,17 +16,22 @@ BASE_ID = 77_770_000
 FILLER_OFFSET = 90_000
 PROGRESSIVE_OFFSET = 91_000
 
-#: name of the single progressive item used when dexsanity is off.
-PROGRESSIVE_LEVEL_CAP_ITEM = "Progressive Level Cap"
-PROGRESSIVE_LEVEL_CAP_ID = BASE_ID + PROGRESSIVE_OFFSET
+#: name of the single progressive item used when Progressive EXP Gain is on.
+PROGRESSIVE_EXP_GAIN_ITEM = "Progressive EXP Gain"
+PROGRESSIVE_EXP_GAIN_ID = BASE_ID + PROGRESSIVE_OFFSET
 
-#: Classic mode's vanilla level cap, one entry per 10-wave block, taken from
-#: https://wiki.pokerogue.net/gameplay:modes:classic . Tier 1 (level 10) is
-#: always available for free; each copy of Progressive Level Cap received
-#: raises the effective cap to the next tier, up to level 200 at tier 20.
-LEVEL_CAP_TIERS: tuple[int, ...] = (
-    10, 16, 24, 32, 38, 48, 56, 64, 74, 84,
-    94, 104, 114, 126, 138, 150, 162, 174, 188, 200,
+#: EXP gain rate, as a percentage of normal, applied on top of vanilla EXP
+#: boosters (Exp Charm, Lucky Egg, etc -- those resolve before this rate is
+#: applied, so they're never wasted). Index 0 is the baseline with zero
+#: copies received; each further index is one more copy. Deliberately climbs
+#: back to and past 100% quickly, rather than the old level-cap design's hard
+#: ceiling: a skilled or efficient player was able to hit an unwinnable wall
+#: if the multiworld hadn't sent enough copies yet (see CHANGELOG), and a
+#: rate multiplier can only ever make things slower, never impossible.
+#: Starting values are a first proposal, not tuned by play-testing yet.
+EXP_GAIN_TIERS: tuple[int, ...] = (
+    50, 85, 100, 105, 110, 115, 120, 125, 130, 135,
+    140, 145, 150, 158, 166, 174, 182, 190, 195, 200,
 )
 
 
@@ -98,7 +103,7 @@ FILLER_ITEM_IDS: dict[str, int] = {
 ITEM_NAME_TO_ID: dict[str, int] = {
     **SPECIES_ITEMS,
     **FILLER_ITEM_IDS,
-    PROGRESSIVE_LEVEL_CAP_ITEM: PROGRESSIVE_LEVEL_CAP_ID,
+    PROGRESSIVE_EXP_GAIN_ITEM: PROGRESSIVE_EXP_GAIN_ID,
 }
 
 #: name -> classification, for everything above.
@@ -110,7 +115,7 @@ ITEM_NAME_TO_ID: dict[str, int] = {
 # balancing. `useful` still protects them from excluded/unreachable
 # locations and marks them desirable, without the false claim.
 #
-# Progressive Level Cap uses `progression | useful` -- AP has no literal tier
+# Progressive EXP Gain uses `progression | useful` -- AP has no literal tier
 # above `progression`, but this combined flag is described in BaseClasses.py
 # itself as "an especially useful progression item" and is the strongest
 # classification the fill algorithm actually offers, which is the closest
@@ -118,7 +123,7 @@ ITEM_NAME_TO_ID: dict[str, int] = {
 ITEM_CLASSIFICATION: dict[str, ItemClassification] = {
     **{n: ItemClassification.useful for n in SPECIES_ITEMS},
     **{f.name: f.classification for f in FILLER_ITEMS},
-    PROGRESSIVE_LEVEL_CAP_ITEM: ItemClassification.progression | ItemClassification.useful,
+    PROGRESSIVE_EXP_GAIN_ITEM: ItemClassification.progression | ItemClassification.useful,
 }
 
 #: item name -> numeric SpeciesId, for the client to act on.
@@ -137,7 +142,7 @@ ITEM_GROUPS: dict[str, set[str]] = {
         "Master Ball",
     },
     "Vouchers": {"Egg Voucher", "Egg Voucher Plus"},
-    "Progression Pacing": {PROGRESSIVE_LEVEL_CAP_ITEM},
+    "Progression Pacing": {PROGRESSIVE_EXP_GAIN_ITEM},
 }
 
 #: Per-generation convenience groups, e.g. "Generation 1 Species".

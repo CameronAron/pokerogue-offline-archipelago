@@ -3,7 +3,7 @@
 from BaseClasses import LocationProgressType
 from test.bases import WorldTestBase
 
-from ..Items import ITEM_NAME_TO_ID, PROGRESSIVE_LEVEL_CAP_ITEM
+from ..Items import EXP_GAIN_TIERS, ITEM_NAME_TO_ID, PROGRESSIVE_EXP_GAIN_ITEM
 from ..Locations import LOCATION_NAME_TO_ID
 from ..Species import DEFAULT_STARTER_POOL, STARTER_SPECIES
 
@@ -14,7 +14,7 @@ class PokeRogueTestBase(WorldTestBase):
 
 
 class TestDefaults(PokeRogueTestBase):
-    """Default options: dexsanity on, progressive level cap off, random starters on."""
+    """Default options: dexsanity on, progressive exp gain off, random starters on."""
 
     options = {}
 
@@ -50,9 +50,9 @@ class TestDefaults(PokeRogueTestBase):
         for species in self.world.species_pool:
             self.assertIn(f"Catch {species.display}", names)
 
-    def test_no_progressive_level_cap_by_default(self) -> None:
+    def test_no_progressive_exp_gain_by_default(self) -> None:
         names = {item.name for item in self.multiworld.itempool}
-        self.assertNotIn(PROGRESSIVE_LEVEL_CAP_ITEM, names)
+        self.assertNotIn(PROGRESSIVE_EXP_GAIN_ITEM, names)
 
     def test_species_items_are_useful_not_progression(self) -> None:
         from BaseClasses import ItemClassification
@@ -79,11 +79,14 @@ class TestDefaults(PokeRogueTestBase):
                 self.assertEqual(loc.progress_type, LocationProgressType.DEFAULT)
         self.assertGreater(excluded_count, 0)
 
+    def test_encounter_bias_off_by_default(self) -> None:
+        self.assertEqual(self.world.options.dexsanity_encounter_bias.value, 0)
 
-class TestDexsanityAndLevelCapBoth(PokeRogueTestBase):
+
+class TestDexsanityAndExpGainBoth(PokeRogueTestBase):
     """Both sanities on at once -- independent toggles, not exclusive."""
 
-    options = {"dexsanity": True, "progressive_level_cap": True}
+    options = {"dexsanity": True, "progressive_exp_gain": True}
 
     def test_pool_balance(self) -> None:
         locations = self.multiworld.get_unfilled_locations(self.player)
@@ -91,7 +94,7 @@ class TestDexsanityAndLevelCapBoth(PokeRogueTestBase):
 
     def test_both_item_types_present(self) -> None:
         names = [item.name for item in self.multiworld.itempool]
-        self.assertIn(PROGRESSIVE_LEVEL_CAP_ITEM, names)
+        self.assertIn(PROGRESSIVE_EXP_GAIN_ITEM, names)
         self.assertTrue(any(n.endswith(" Unlock") for n in names))
 
     def test_dexsanity_locations_exist(self) -> None:
@@ -102,11 +105,11 @@ class TestDexsanityAndLevelCapBoth(PokeRogueTestBase):
 class TestAggressiveExclusionStressTest(PokeRogueTestBase):
     """Worst case for the excluded-locations-vs-fillable-items constraint:
     both sanities on, and exclusion turned up so high that most of the
-    species pool's own locations can't hold a species/level-cap item at all.
+    species pool's own locations can't hold a species/EXP-gain item at all.
     This must trim gracefully (some species lose their unlock item) rather
     than crash generation."""
 
-    options = {"dexsanity": True, "progressive_level_cap": True, "dexsanity_exclude_above_cost": 1}
+    options = {"dexsanity": True, "progressive_exp_gain": True, "dexsanity_exclude_above_cost": 1}
 
     def test_pool_balance(self) -> None:
         locations = self.multiworld.get_unfilled_locations(self.player)
@@ -132,10 +135,10 @@ class TestAggressiveExclusionStressTest(PokeRogueTestBase):
         self.assertGreater(self.world.excluded_location_count, 400)
 
 
-class TestDexsanityOffLevelCapOff(PokeRogueTestBase):
+class TestDexsanityOffExpGainOff(PokeRogueTestBase):
     """Neither sanity on: plain wave-progress checks, vanilla catching."""
 
-    options = {"dexsanity": False, "progressive_level_cap": False}
+    options = {"dexsanity": False, "progressive_exp_gain": False}
 
     def test_pool_balance(self) -> None:
         locations = self.multiworld.get_unfilled_locations(self.player)
@@ -145,39 +148,68 @@ class TestDexsanityOffLevelCapOff(PokeRogueTestBase):
         names = {loc.name for loc in self.multiworld.get_locations(self.player)}
         self.assertFalse([n for n in names if n.startswith("Catch ")])
 
-    def test_no_progressive_level_cap_items(self) -> None:
+    def test_no_progressive_exp_gain_items(self) -> None:
         names = [item.name for item in self.multiworld.itempool]
-        self.assertNotIn(PROGRESSIVE_LEVEL_CAP_ITEM, names)
+        self.assertNotIn(PROGRESSIVE_EXP_GAIN_ITEM, names)
 
     def test_wave_checks_are_pure_filler(self) -> None:
         # 19 wave checks (10..190), all filled with ordinary filler/useful items.
         self.assertEqual(len(self.multiworld.itempool), 19)
 
 
-class TestProgressiveLevelCapAlone(PokeRogueTestBase):
-    """Level cap on, dexsanity off -- the old iteration-2 default behaviour,
-    now reachable only by explicitly combining the two independent toggles."""
+class TestProgressiveExpGainAlone(PokeRogueTestBase):
+    """EXP gain on, dexsanity off."""
 
-    options = {"dexsanity": False, "progressive_level_cap": True, "wave_check_interval": 10}
+    options = {"dexsanity": False, "progressive_exp_gain": True, "wave_check_interval": 10}
 
     def test_pool_balance(self) -> None:
         locations = self.multiworld.get_unfilled_locations(self.player)
         self.assertEqual(len(self.multiworld.itempool), len(locations))
 
-    def test_every_wave_check_is_progressive_level_cap(self) -> None:
+    def test_every_wave_check_is_progressive_exp_gain(self) -> None:
         names = [item.name for item in self.multiworld.itempool]
-        self.assertEqual(names.count(PROGRESSIVE_LEVEL_CAP_ITEM), 19)
+        self.assertEqual(names.count(PROGRESSIVE_EXP_GAIN_ITEM), 19)
         self.assertEqual(len(names), 19)
 
-    def test_slot_data_exposes_level_cap_tiers(self) -> None:
+    def test_slot_data_exposes_exp_gain_tiers(self) -> None:
         data = self.world.fill_slot_data()
-        self.assertEqual(len(data["level_cap_tiers"]), 20)
-        self.assertEqual(data["level_cap_tiers"][0], 10)
-        self.assertEqual(data["level_cap_tiers"][-1], 200)
-        self.assertIsNotNone(data["progressive_level_cap_item"])
+        self.assertEqual(len(data["exp_gain_tiers"]), 20)
+        # Baseline (zero copies) must be a reduction, never a hard wall --
+        # this is the entire point of the redesign away from a hard level
+        # cap: a rate can only ever make things slower, never impossible.
+        self.assertLess(data["exp_gain_tiers"][0], 100)
+        self.assertGreater(data["exp_gain_tiers"][0], 0)
+        # Full completion should meet or exceed normal as a reward.
+        self.assertGreaterEqual(data["exp_gain_tiers"][-1], 100)
+        self.assertIsNotNone(data["progressive_exp_gain_item"])
+
+    def test_exp_gain_tiers_monotonically_increase(self) -> None:
+        tiers = list(EXP_GAIN_TIERS)
+        self.assertEqual(tiers, sorted(tiers), "each further copy must never lower the rate")
 
     def test_dexsanity_off_species_pool_empty(self) -> None:
         self.assertEqual(len(self.world.species_pool), 0)
+
+
+class TestDexsanityEncounterBias(PokeRogueTestBase):
+    """Encounter bias is a plain percentage option, independent of everything else."""
+
+    options = {"dexsanity": True, "dexsanity_encounter_bias": 50}
+
+    def test_pool_balance(self) -> None:
+        locations = self.multiworld.get_unfilled_locations(self.player)
+        self.assertEqual(len(self.multiworld.itempool), len(locations))
+
+    def test_bias_value_in_slot_data(self) -> None:
+        data = self.world.fill_slot_data()
+        self.assertEqual(data["dexsanity_encounter_bias"], 50)
+
+    def test_bias_has_no_effect_on_items_or_locations(self) -> None:
+        # Encounter bias only affects which wild Pokemon shows up in-game; it
+        # must never change the item/location pool itself.
+        names = {loc.name for loc in self.multiworld.get_locations(self.player)}
+        for species in self.world.species_pool:
+            self.assertIn(f"Catch {species.display}", names)
 
 
 class TestCuratedStarters(PokeRogueTestBase):
@@ -252,6 +284,24 @@ class TestShortGoal(PokeRogueTestBase):
         self.assertEqual(len(self.multiworld.itempool), len(locations))
 
 
+class TestFloorCheckInterval(PokeRogueTestBase):
+    """wave_check_interval down to 1 gives a check on every single wave --
+    the FloorSanity-style option, expressed as an interval value rather than
+    a whole separate mechanic."""
+
+    options = {"wave_check_interval": 1, "goal_wave": 50, "dexsanity": False}
+
+    def test_every_wave_is_a_location(self) -> None:
+        names = {loc.name for loc in self.multiworld.get_locations(self.player)}
+        for wave in range(1, 50):
+            self.assertIn(f"Wave {wave} Cleared", names)
+        self.assertNotIn("Wave 50 Cleared", names)
+
+    def test_pool_balance(self) -> None:
+        locations = self.multiworld.get_unfilled_locations(self.player)
+        self.assertEqual(len(self.multiworld.itempool), len(locations))
+
+
 class TestMaxStartingSpecies(PokeRogueTestBase):
     options = {"starting_species": 6, "random_starters": True}
 
@@ -281,24 +331,29 @@ class TestDataIntegrity(PokeRogueTestBase):
         for species in DEFAULT_STARTER_POOL:
             self.assertIn(species, STARTER_SPECIES)
 
+    def test_exp_gain_tiers_shape(self) -> None:
+        self.assertEqual(len(EXP_GAIN_TIERS), 20)
+
     def test_slot_data_shape(self) -> None:
         data = self.world.fill_slot_data()
         for key in (
             "goal_wave",
             "dexsanity",
-            "progressive_level_cap",
+            "dexsanity_encounter_bias",
+            "progressive_exp_gain",
             "dexsanity_species",
             "species_items",
             "all_starter_species",
             "pool_species",
             "starting_species",
             "wave_locations",
-            "progressive_level_cap_item",
-            "level_cap_tiers",
+            "progressive_exp_gain_item",
+            "exp_gain_tiers",
         ):
             self.assertIn(key, data)
         self.assertEqual(data["goal_wave"], 200)
         self.assertEqual(len(data["pool_species"]), len(STARTER_SPECIES))
         self.assertEqual(len(data["all_starter_species"]), len(STARTER_SPECIES))
-        self.assertIsNone(data["progressive_level_cap_item"])
-        self.assertEqual(data["level_cap_tiers"], [])
+        self.assertIsNone(data["progressive_exp_gain_item"])
+        self.assertEqual(data["exp_gain_tiers"], [])
+        self.assertEqual(data["dexsanity_encounter_bias"], 0)

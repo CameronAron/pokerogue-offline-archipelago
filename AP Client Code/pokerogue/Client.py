@@ -127,19 +127,19 @@ class PokeRogueCommandProcessor(ClientCommandProcessor):
         ctx.queue_push_state()
         logger.info("Resync queued.")
 
-    def _cmd_levelcap(self) -> None:
-        """Show your current Classic-mode level cap tier."""
+    def _cmd_expgain(self) -> None:
+        """Show your current Progressive EXP Gain rate."""
         ctx: PokeRogueContext = self.ctx
-        if not ctx.progressive_level_cap_enabled or not ctx.level_cap_tiers:
-            logger.info("Progressive Level Cap is off this seed.")
+        if not ctx.progressive_exp_gain_enabled or not ctx.exp_gain_tiers:
+            logger.info("Progressive EXP Gain is off this seed.")
             return
-        tier = min(ctx.level_cap_count, len(ctx.level_cap_tiers) - 1)
+        tier = min(ctx.exp_gain_count, len(ctx.exp_gain_tiers) - 1)
         logger.info(
-            "Level cap: %d (tier %d/%d, %d copies received).",
-            ctx.level_cap_tiers[tier],
+            "EXP gain rate: %d%% (tier %d/%d, %d copies received).",
+            ctx.exp_gain_tiers[tier],
             tier + 1,
-            len(ctx.level_cap_tiers),
-            ctx.level_cap_count,
+            len(ctx.exp_gain_tiers),
+            ctx.exp_gain_count,
         )
 
 
@@ -162,7 +162,8 @@ class PokeRogueContext(CommonContext):
         self.slot_data: dict[str, Any] = {}
         self.goal_wave: int = 200
         self.dexsanity: bool = True
-        self.progressive_level_cap_enabled: bool = False
+        self.dexsanity_encounter_bias: int = 0
+        self.progressive_exp_gain_enabled: bool = False
         #: numeric SpeciesId -> AP location id
         self.dexsanity_species: dict[int, int] = {}
         #: AP item id -> numeric SpeciesId
@@ -172,15 +173,15 @@ class PokeRogueContext(CommonContext):
         self.pool_species: list[int] = []
         #: Every species the gate manages, regardless of mode or pool.
         self.all_starter_species: list[int] = []
-        #: AP item id for Progressive Level Cap, or None when dexsanity is on.
-        self.progressive_level_cap_item: int | None = None
-        #: Vanilla wave-block level cap values, tier 1 first.
-        self.level_cap_tiers: list[int] = []
+        #: AP item id for Progressive EXP Gain, or None when the option is off.
+        self.progressive_exp_gain_item: int | None = None
+        #: EXP gain rate as a percentage of normal, tier 1 (baseline) first.
+        self.exp_gain_tiers: list[int] = []
 
         #: Species the player is currently allowed to use.
         self.unlocked_species: set[int] = set()
-        #: Copies of Progressive Level Cap received so far.
-        self.level_cap_count: int = 0
+        #: Copies of Progressive EXP Gain received so far.
+        self.exp_gain_count: int = 0
         #: Filler item names received, for display in-game.
         self.pending_notifications: list[dict[str, Any]] = []
 
@@ -230,7 +231,8 @@ class PokeRogueContext(CommonContext):
     def _apply_slot_data(self, data: dict[str, Any]) -> None:
         self.goal_wave = int(data.get("goal_wave", 200))
         self.dexsanity = bool(data.get("dexsanity", True))
-        self.progressive_level_cap_enabled = bool(data.get("progressive_level_cap", False))
+        self.dexsanity_encounter_bias = int(data.get("dexsanity_encounter_bias", 0))
+        self.progressive_exp_gain_enabled = bool(data.get("progressive_exp_gain", False))
         self.dexsanity_species = {
             int(k): int(v) for k, v in (data.get("dexsanity_species") or {}).items()
         }
@@ -242,9 +244,9 @@ class PokeRogueContext(CommonContext):
         }
         self.pool_species = [int(x) for x in (data.get("pool_species") or [])]
         self.all_starter_species = [int(x) for x in (data.get("all_starter_species") or [])]
-        raw_cap_item = data.get("progressive_level_cap_item")
-        self.progressive_level_cap_item = int(raw_cap_item) if raw_cap_item is not None else None
-        self.level_cap_tiers = [int(x) for x in (data.get("level_cap_tiers") or [])]
+        raw_exp_item = data.get("progressive_exp_gain_item")
+        self.progressive_exp_gain_item = int(raw_exp_item) if raw_exp_item is not None else None
+        self.exp_gain_tiers = [int(x) for x in (data.get("exp_gain_tiers") or [])]
 
         logger.info(
             "Slot configured: goal wave %d, dexsanity %s, %d species in pool.",
@@ -270,17 +272,17 @@ class PokeRogueContext(CommonContext):
         """
         unlocked: set[int] = set()
         notifications: list[dict[str, Any]] = []
-        level_cap_count = 0
+        exp_gain_count = 0
 
         for item in self.items_received:
             species_id = self.species_items.get(item.item)
             if species_id is not None:
                 unlocked.add(species_id)
             elif (
-                self.progressive_level_cap_item is not None
-                and item.item == self.progressive_level_cap_item
+                self.progressive_exp_gain_item is not None
+                and item.item == self.progressive_exp_gain_item
             ):
-                level_cap_count += 1
+                exp_gain_count += 1
             else:
                 name = self.item_names.lookup_in_game(item.item, self.game)
                 if name:
@@ -290,17 +292,17 @@ class PokeRogueContext(CommonContext):
         for species_id in sorted(newly):
             logger.info("Unlocked: %s", self.species_display(species_id))
 
-        if level_cap_count != self.level_cap_count and self.level_cap_tiers:
-            tier = min(level_cap_count, len(self.level_cap_tiers) - 1)
+        if exp_gain_count != self.exp_gain_count and self.exp_gain_tiers:
+            tier = min(exp_gain_count, len(self.exp_gain_tiers) - 1)
             logger.info(
-                "Level cap raised to %d (tier %d/%d).",
-                self.level_cap_tiers[tier],
+                "EXP gain rate raised to %d%% (tier %d/%d).",
+                self.exp_gain_tiers[tier],
                 tier + 1,
-                len(self.level_cap_tiers),
+                len(self.exp_gain_tiers),
             )
 
         self.unlocked_species = unlocked
-        self.level_cap_count = level_cap_count
+        self.exp_gain_count = exp_gain_count
         self.pending_notifications = notifications
 
     def queue_push_state(self) -> None:
@@ -351,6 +353,7 @@ class PokeRogueContext(CommonContext):
             "seed_name": self.seed_name,
             "goal_wave": self.goal_wave,
             "dexsanity": self.dexsanity,
+            "dexsanity_encounter_bias": self.dexsanity_encounter_bias,
             "death_link": "DeathLink" in self.tags,
             # Everything the bridge needs to enforce gating locally.
             "unlocked_species": sorted(self.unlocked_species),
@@ -360,9 +363,9 @@ class PokeRogueContext(CommonContext):
             "wave_locations": {str(k): v for k, v in self.wave_locations.items()},
             "checked_locations": sorted(self.checked_locations),
             "notifications": self.pending_notifications,
-            "level_cap_count": self.level_cap_count,
-            "level_cap_tiers": self.level_cap_tiers,
-            "progressive_level_cap": self.progressive_level_cap_enabled,
+            "exp_gain_count": self.exp_gain_count,
+            "exp_gain_tiers": self.exp_gain_tiers,
+            "progressive_exp_gain": self.progressive_exp_gain_enabled,
             # Species with a live dexsanity check not yet completed. Drives
             # the "still needs catching" indicator in-game.
             "pending_dexsanity_species": pending_dexsanity,

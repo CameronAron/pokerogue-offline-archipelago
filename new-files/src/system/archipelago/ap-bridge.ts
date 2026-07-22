@@ -6,8 +6,8 @@
  * owns all authoritative state; this module only:
  *
  *   1. observes the live game and reports events (catches, waves, victory), and
- *   2. enforces species availability and (in one mode) the level cap locally,
- *      using the state the client sends.
+ *   2. enforces species availability and (in two independent modes) EXP gain
+ *      rate and encounter selection locally, using the state the client sends.
  *
  * Design notes
  * ------------
@@ -18,8 +18,9 @@
  * Classic victory/defeat notify in game-over-phase.ts, the party-add refusal
  * in field/pokemon.ts (see apCanAddToParty), and the "still needs catching"
  * icon in enemy-battle-info.ts (see apNeedsCatch). Everything else -- the
- * species lock, the level cap, dexsanity detection -- is this module driving
- * the game's own data structures directly.
+ * species lock, EXP gain rate, encounter selection, dexsanity detection -- is
+ * this module driving or wrapping the game's own data structures and methods
+ * directly.
  *
  * The species gate: PokeRogue already refuses to let you select an uncaught
  * species as a starter (`dexData[id].caughtAttr === 0n`). Rather than add a
@@ -32,8 +33,24 @@
  *
  * The gate is only active when Dexsanity is on. With it off there is no
  * species pool to grow from -- catching and using Pokemon works exactly like
- * vanilla, and the only Archipelago mechanic left is Progressive Level Cap
- * (which is its own independent toggle; see installLevelCapOverride).
+ * vanilla, and the only Archipelago mechanics left are Progressive EXP Gain
+ * and Dexsanity Encounter Bias (each its own independent toggle -- see
+ * installExpGainOverride and installEncounterBiasOverride).
+ *
+ * Progressive EXP Gain deliberately throttles a *rate*, not a hard level cap.
+ * An earlier design clamped `getMaxExpLevel` outright, which meant a seed
+ * where the multiworld hadn't yet sent enough copies could become physically
+ * unwinnable -- no amount of play could get past a wave whose difficulty
+ * required a level the cap refused to allow. A rate multiplier can only ever
+ * make leveling slower, never impossible: a skilled or patient player can
+ * always out-grind a low rate. See installExpGainOverride.
+ *
+ * Dexsanity Encounter Bias substitutes a still-needed species into a wild or
+ * boss encounter, but only ever *after* the game's own seeded RNG has fully
+ * resolved a natural roll -- it never consumes an additional seeded random
+ * call itself, so it cannot shift the deterministic sequence every other
+ * random event in a run depends on. See installEncounterBiasOverride for the
+ * detailed reasoning.
  *
  * Dexsanity catch-detection intentionally reads `caughtCount`, not
  * `caughtAttr`. `caughtCount` only increments through a real in-run catch
@@ -46,11 +63,13 @@
  * concerns or false-positive checks.
  *
  * A save carried over from a different multiworld (or from non-AP play) is
- * handled by tagging localStorage with the connected room's seed_name: the
- * first time a new or different seed_name is seen, the currently-caught set
- * is captured as a silent baseline instead of being reported, so switching
- * multiworlds on the same save doesn't instantly fire someone else's catch
- * history as checks. See establishBaselineIfNeeded.
+ * handled by permanently excluding, per seed_name, whatever was already
+ * caught the first time that seed connects. This is persisted to its own
+ * localStorage record (not just held in memory), specifically so it survives
+ * every later State push -- an earlier version of this fix relied on an
+ * in-memory cache that gets legitimately cleared on every ordinary item
+ * receipt, which meant the protection only lasted until the next unrelated
+ * game event. See establishBaselineIfNeeded.
  *
  * All reporting is idempotent: we send the *current* state (every caught
  * species, the current wave) rather than deltas, and the client de-duplicates
@@ -62,12 +81,13 @@ import { AbilityAttr } from "#enums/ability-attr";
 import { DexAttr } from "#enums/dex-attr";
 import { SpeciesId } from "#enums/species-id";
 import { globalScene } from "#app/global-scene";
+import { speciesDataRegistry } from "#app/global-species-data-registry";
 
-const BRIDGE_VERSION = "0.3.0";
+const BRIDGE_VERSION = "0.4.0";
 const DEFAULT_PORT = 17777;
 const POLL_INTERVAL_MS = 1000;
 const RECONNECT_DELAY_MS = 3000;
-const SEED_TAG_KEY = "ap_seed_tag";
+const BASELINE_KEY = "ap_dexsanity_baselines";
 const AP_CHECK_TEXTURE_KEY = "ap_needs_catch_icon";
 
 /** The same bitmask PokeRogue itself grants to `defaultStarterSpecies` on a
@@ -102,7 +122,10 @@ interface ApState {
   seedName: string | null;
   goalWave: number;
   dexsanity: boolean;
-  progressiveLevelCap: boolean;
+  /** 0-100. Chance to substitute a still-needed species into an eligible
+   * wild/boss encounter. 0 means the mechanism never fires. */
+  dexsanityEncounterBias: number;
+  progressiveExpGain: boolean;
   deathLink: boolean;
   /** Species the player may currently use. Sole source of truth for the gate. */
   unlocked: Set<number>;
@@ -111,12 +134,13 @@ interface ApState {
   /** Species that have a dexsanity check attached (empty when dexsanity is off). */
   dexsanitySpecies: Set<number>;
   /** Species with a dexsanity check that hasn't fired yet -- drives the
-   * "still needs catching" icon. */
+   * "still needs catching" icon and encounter bias substitution candidates. */
   pendingDexsanitySpecies: Set<number>;
-  /** Copies of Progressive Level Cap received so far. */
-  levelCapCount: number;
-  /** Vanilla wave-block level cap values, tier 1 first. Empty when the option is off. */
-  levelCapTiers: number[];
+  /** Copies of Progressive EXP Gain received so far. */
+  expGainCount: number;
+  /** EXP gain rate as a percentage of normal, tier 1 (baseline) first. Empty
+   * when the option is off. */
+  expGainTiers: number[];
 }
 
 const state: ApState = {
@@ -125,25 +149,29 @@ const state: ApState = {
   seedName: null,
   goalWave: 200,
   dexsanity: true,
-  progressiveLevelCap: false,
+  dexsanityEncounterBias: 0,
+  progressiveExpGain: false,
   deathLink: false,
   unlocked: new Set<number>(),
   allStarters: new Set<number>(),
   dexsanitySpecies: new Set<number>(),
   pendingDexsanitySpecies: new Set<number>(),
-  levelCapCount: 0,
-  levelCapTiers: [],
+  expGainCount: 0,
+  expGainTiers: [],
 };
 
 let socket: WebSocket | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** Last catch set we reported, so we only send on change. */
+/** Last catch set we reported, so we only send on change. Purely a
+ * spam-reduction cache -- resetting it is always safe now, since permanent
+ * "never report this" exclusion lives in `excludedBaseline` instead (see
+ * establishBaselineIfNeeded's doc comment for why that split matters). */
 let lastReportedCaught = new Set<number>();
 let lastReportedWave = -1;
-/** Set when a new/different seed_name is seen; consumed on the next poll to
- * silently snapshot current catches instead of reporting them. */
+/** Set when a seed with no persisted baseline yet is seen; consumed on the
+ * next poll to compute and permanently persist that baseline. */
 let needsBaselineSnapshot = false;
 
 // ─────────────────────────────────────────────────────────────── public API
@@ -288,35 +316,72 @@ function resetReportCache(): void {
 }
 
 /**
- * Tag localStorage with the connected room's seed_name. The first time a
- * new or different seed_name shows up, flag that the next dexsanity scan
- * should silently baseline instead of reporting -- otherwise reconnecting an
- * existing save to a *different* multiworld (or resuming non-AP play) would
- * instantly fire every already-caught species as a check.
- *
- * Deliberately does nothing when seed_name is absent (older servers) or when
- * it matches what's already tagged -- both cases mean "keep reporting
- * normally".
+ * Species excluded from dexsanity reporting for the *current* seed, because
+ * they were already caught before this seed was ever connected to. Loaded
+ * from (and kept in sync with) a persistent, per-seed localStorage record --
+ * deliberately NOT just an in-memory cache. An earlier version of this fix
+ * used a transient cache (`lastReportedCaught`) as the only thing standing
+ * between "already caught" and "reported as a fresh catch", and that cache
+ * gets legitimately cleared by resetReportCache() on every subsequent State
+ * push (which happens on every ordinary item receipt, not just at connect).
+ * The result: baseline protection silently evaporated the moment any
+ * unrelated item arrived, and every pre-existing catch fired for real on the
+ * next poll. Persisting the exclusion list itself, rather than relying on a
+ * cache that's supposed to never get cleared at the wrong time, closes that
+ * hole for good -- there is no code path left that both wants to clear
+ * lastReportedCaught for legitimate reasons AND accidentally un-excludes a
+ * baselined species, because the two are no longer the same variable.
  */
-function establishBaselineIfNeeded(seedName: string | null): void {
-  if (!seedName) {
-    return;
-  }
-  let storedTag: string | null = null;
+let excludedBaseline = new Set<number>();
+
+function loadBaselineMap(): Record<string, number[]> {
   try {
-    storedTag = localStorage.getItem(SEED_TAG_KEY);
+    const raw = localStorage.getItem(BASELINE_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
-    return; // no localStorage access; nothing safe to do here
+    return {};
   }
-  if (storedTag === seedName) {
-    return;
-  }
-  needsBaselineSnapshot = true;
+}
+
+function saveBaselineMap(map: Record<string, number[]>): void {
   try {
-    localStorage.setItem(SEED_TAG_KEY, seedName);
+    localStorage.setItem(BASELINE_KEY, JSON.stringify(map));
   } catch {
     /* ignore */
   }
+}
+
+/**
+ * Ensure `excludedBaseline` reflects the right permanent exclusion set for
+ * whichever seed is currently connected. Three cases:
+ *
+ *   - No seed_name at all (older servers): nothing to do, exclude nothing.
+ *   - A seed we've never seen on this save: flag that the next poll should
+ *     snapshot current catches and persist them as this seed's baseline.
+ *   - A seed we've already tagged before (including "the same seed as last
+ *     State push", which is the overwhelmingly common case -- this runs on
+ *     every State message): load its already-persisted baseline back into
+ *     `excludedBaseline` so it survives regardless of what else changes.
+ */
+function establishBaselineIfNeeded(seedName: string | null): void {
+  if (!seedName) {
+    excludedBaseline = new Set<number>();
+    return;
+  }
+
+  const map = loadBaselineMap();
+  const existing = map[seedName];
+
+  if (existing) {
+    excludedBaseline = new Set<number>(existing.map(Number));
+    return;
+  }
+
+  needsBaselineSnapshot = true;
   try {
     console.info(
       `[Archipelago] New multiworld detected (${seedName}). Baselining existing catch ` +
@@ -327,6 +392,17 @@ function establishBaselineIfNeeded(seedName: string | null): void {
   }
 }
 
+/** Called from poll() once, right after a fresh baseline snapshot is taken. */
+function persistBaseline(seedName: string | null, caught: Set<number>): void {
+  excludedBaseline = new Set<number>(caught);
+  if (!seedName) {
+    return;
+  }
+  const map = loadBaselineMap();
+  map[seedName] = Array.from(caught);
+  saveBaselineMap(map);
+}
+
 function handleMessage(msg: Record<string, any>): void {
   switch (msg.cmd) {
     case "State": {
@@ -335,7 +411,8 @@ function handleMessage(msg: Record<string, any>): void {
       state.seedName = msg.seed_name ?? null;
       state.goalWave = Number(msg.goal_wave ?? 200);
       state.dexsanity = Boolean(msg.dexsanity);
-      state.progressiveLevelCap = Boolean(msg.progressive_level_cap);
+      state.dexsanityEncounterBias = Number(msg.dexsanity_encounter_bias ?? 0);
+      state.progressiveExpGain = Boolean(msg.progressive_exp_gain);
       state.deathLink = Boolean(msg.death_link);
       state.unlocked = new Set<number>((msg.unlocked_species ?? []).map(Number));
       state.allStarters = new Set<number>((msg.all_starter_species ?? []).map(Number));
@@ -345,8 +422,8 @@ function handleMessage(msg: Record<string, any>): void {
       state.pendingDexsanitySpecies = new Set<number>(
         (msg.pending_dexsanity_species ?? []).map(Number),
       );
-      state.levelCapCount = Number(msg.level_cap_count ?? 0);
-      state.levelCapTiers = (msg.level_cap_tiers ?? []).map(Number);
+      state.expGainCount = Number(msg.exp_gain_count ?? 0);
+      state.expGainTiers = (msg.exp_gain_tiers ?? []).map(Number);
 
       establishBaselineIfNeeded(state.seedName);
       // A fresh state push may reveal checks we never reported (e.g. the
@@ -467,33 +544,208 @@ function enforceSpeciesGate(gameData: any): void {
 }
 
 /**
- * Install (once) a wrapper around `globalScene.getMaxExpLevel` that clamps
- * the result to the AP-granted level cap tier when Progressive Level Cap is
- * on. Left untouched -- returns the vanilla wave-based value -- when the
- * option is off, when the caller explicitly asked to ignore the cap (this is
- * how Rare Candy already bypasses it in vanilla), or before AP connects.
- *
- * This patches the live scene instance rather than the source, since
- * `getMaxExpLevel` is a pure function of public state; wrapping the bound
- * instance method survives every internal call site (`this.getMaxExpLevel()`
- * resolves through the instance first) without touching battle-scene.ts at
- * all. Idempotent via a marker property, and self-reinstalls if the scene is
- * ever recreated (e.g. a full page reload swaps out `globalScene`).
+ * Current EXP gain multiplier, as a plain fraction of normal (1.0 = 100%).
+ * Tier 0 (no copies received) is the throttled baseline; each further copy
+ * climbs a tier, eventually exceeding 100% at full completion. Returns 1.0
+ * (no effect) whenever the option is off or before AP connects.
  */
-function installLevelCapOverride(s: any): void {
-  if (s.__apLevelCapPatched) {
+function currentExpGainMultiplier(): number {
+  if (!state.connected || !state.progressiveExpGain || state.expGainTiers.length === 0) {
+    return 1;
+  }
+  const tier = Math.min(state.expGainCount, state.expGainTiers.length - 1);
+  return state.expGainTiers[tier] / 100;
+}
+
+/**
+ * Patch a single Pokemon instance's `addExp` to scale incoming EXP by the
+ * current AP tier multiplier. Idempotent via a marker property; safe to call
+ * on the same instance repeatedly.
+ *
+ * Deliberately an *instance*-level patch, not a prototype patch on the
+ * `Pokemon` class. Patching the prototype would need importing the `Pokemon`
+ * class into this module -- but `field/pokemon.ts` already imports *from*
+ * this module for the party-add gate (apCanAddToParty), and importing it
+ * back here would create a circular import between the two files. Instance
+ * patching sidesteps that entirely: this function is exported so the
+ * patched `addToParty` can call it the instant a Pokemon actually joins the
+ * party (closing the gap before the next poll tick would otherwise catch
+ * it), and installExpGainOverride below also sweeps the whole party every
+ * poll tick as a backstop.
+ *
+ * Exp Charm, Lucky Egg, and other vanilla EXP boosters (`ExpBoosterModifier`)
+ * resolve before `addExp` is ever called (see `phases/exp-phase.ts`), so
+ * this multiplier applies on top of whatever they already gave -- vanilla
+ * boosters are never wasted, they just get scaled further by wherever the AP
+ * tier sits. Rare Candy is unaffected either way, since it increments
+ * `.level` directly and never calls `addExp` at all.
+ */
+export function apPatchExpGain(pokemon: any): void {
+  if (!pokemon || pokemon.__apExpGainPatched || typeof pokemon.addExp !== "function") {
     return;
   }
-  const original: (ignoreLevelCap?: boolean) => number = s.getMaxExpLevel.bind(s);
-  s.getMaxExpLevel = (ignoreLevelCap = false): number => {
-    const vanilla = original(ignoreLevelCap);
-    if (ignoreLevelCap || !state.connected || !state.progressiveLevelCap || state.levelCapTiers.length === 0) {
-      return vanilla;
-    }
-    const tier = Math.min(state.levelCapCount, state.levelCapTiers.length - 1);
-    return Math.min(vanilla, state.levelCapTiers[tier]);
+  const original: (exp: number, ignoreLevelCap?: boolean) => void = pokemon.addExp.bind(pokemon);
+  pokemon.addExp = (exp: number, ignoreLevelCap = false): void => {
+    original(exp * currentExpGainMultiplier(), ignoreLevelCap);
   };
-  s.__apLevelCapPatched = true;
+  pokemon.__apExpGainPatched = true;
+}
+
+/** Sweep the live party every poll tick, patching any member not already
+ * covered. A backstop for apPatchExpGain -- most of the time a party member
+ * is already patched by the time this runs, since the party-add patch calls
+ * apPatchExpGain immediately, but this covers anything that slipped through
+ * (e.g. a party loaded from a session resume). */
+function installExpGainOverride(s: any): void {
+  if (!state.connected || !state.progressiveExpGain) {
+    return;
+  }
+  const party = typeof s.getPlayerParty === "function" ? s.getPlayerParty() : null;
+  if (!Array.isArray(party)) {
+    return;
+  }
+  for (const pokemon of party) {
+    apPatchExpGain(pokemon);
+  }
+}
+
+/**
+ * Find which of `arena.pokemonPool`'s tier arrays contains this species ID.
+ * Deliberately searches by value across whatever tiers exist rather than
+ * indexing by a specific `BiomePoolTier` enum value -- that avoids this
+ * module depending on the enum's exact numeric layout at all, on top of
+ * never needing to select a tier itself (which would mean replicating the
+ * game's own seeded tier roll, exactly the risk this design avoids).
+ * Returns null if not found in any tier -- callers should treat that as
+ * "can't confidently match rarity" and skip biasing that encounter, rather
+ * than guess.
+ */
+function findMatchingTierPool(arena: any, speciesId: number): number[] | null {
+  const pools = arena?.pokemonPool;
+  if (!pools) {
+    return null;
+  }
+  for (const tierPool of Object.values(pools)) {
+    if (Array.isArray(tierPool) && (tierPool as number[]).includes(speciesId)) {
+      return tierPool as number[];
+    }
+  }
+  return null;
+}
+
+/**
+ * Install (once) a wrapper around `globalScene.arena.randomSpecies` that may
+ * substitute a still-needed dexsanity species into an eligible wild or boss
+ * encounter. This is the mechanism described at length in the module doc
+ * comment; the short version is repeated here since it's the part most
+ * worth re-reading before touching this function.
+ *
+ * Safety property: this NEVER consumes an additional call to the game's
+ * seeded RNG. The original `randomSpecies` is called exactly once and
+ * allowed to fully resolve -- including its own internal retries for empty
+ * tiers or level-incompatible legendaries, which recurse through
+ * `this.randomSpecies(...)` and therefore back through this very wrapper;
+ * substitution logic only runs on the outermost call (`attempt === 0`), so
+ * those internal retries pass through untouched. Only once a final species
+ * has been fully resolved -- including PokeRogue's own level-appropriate
+ * evolution stage adjustment -- does this function decide, using
+ * `Math.random` (never the seeded generator), whether to swap it for a
+ * same-tier species still needed for dexsanity. `getWildSpeciesForLevel`
+ * (used to re-level the substitute exactly as vanilla would have) is a pure
+ * function with no RNG calls of its own, confirmed by reading its body, so
+ * calling it an extra time for the substitute costs nothing.
+ *
+ * Substitution only ever happens within the SAME tier array (searched by
+ * membership, not by replaying the tier roll -- see findMatchingTierPool)
+ * the natural roll's pre-adjustment species came from, so it can never make
+ * an encounter easier or harder than the wave already intends -- only more
+ * likely to be useful. If that tier can't be confidently identified (the
+ * natural pick isn't found in any tier array, which can happen for some
+ * evolution-stage edge cases), this skips biasing that single encounter
+ * rather than guess at an unverified rarity match.
+ *
+ * `arena` (and therefore this wrapper) is recreated on some scene
+ * transitions, so this self-reinstalls via a marker property checked every
+ * poll tick, the same pattern as the old level-cap override used.
+ */
+function installEncounterBiasOverride(s: any): void {
+  const arena = s?.arena;
+  if (!arena || arena.__apEncounterBiasPatched || typeof arena.randomSpecies !== "function") {
+    return;
+  }
+  const original: (
+    waveIndex: number,
+    level: number,
+    attempt?: number,
+    luckValue?: number,
+    isBoss?: boolean,
+  ) => any = arena.randomSpecies.bind(arena);
+
+  arena.randomSpecies = (
+    waveIndex: number,
+    level: number,
+    attempt = 0,
+    luckValue = 0,
+    isBoss?: boolean,
+  ): any => {
+    const natural = original(waveIndex, level, attempt, luckValue, isBoss);
+
+    // Only ever decide on the outermost call. Vanilla's own internal retries
+    // (empty tier, incompatible legendary level) recurse back through this
+    // wrapper at attempt > 0; let those resolve exactly as vanilla intends.
+    if (attempt > 0 || !natural) {
+      return natural;
+    }
+    if (
+      !state.connected ||
+      !state.dexsanity ||
+      state.dexsanityEncounterBias <= 0 ||
+      state.pendingDexsanitySpecies.size === 0
+    ) {
+      return natural;
+    }
+
+    const naturalId: number = natural.speciesId;
+    if (state.pendingDexsanitySpecies.has(naturalId)) {
+      return natural; // already a useful roll; nothing to improve
+    }
+
+    const tierPool = findMatchingTierPool(arena, naturalId);
+    if (!tierPool) {
+      return natural; // can't confidently match rarity; leave this one alone
+    }
+
+    const candidates = tierPool.filter(
+      id => id !== naturalId && state.pendingDexsanitySpecies.has(id),
+    );
+    if (candidates.length === 0) {
+      return natural; // nothing pending in this rarity tier to swap toward
+    }
+
+    // Independent, non-seeded decision -- never the game's own generator.
+    if (Math.random() * 100 >= state.dexsanityEncounterBias) {
+      return natural;
+    }
+
+    try {
+      const chosenId = candidates[Math.floor(Math.random() * candidates.length)];
+      let substitute = speciesDataRegistry.getSpecies(chosenId);
+      const leveledId = substitute.getWildSpeciesForLevel(
+        level,
+        true,
+        isBoss ?? false,
+        globalScene.gameMode,
+      );
+      if (leveledId !== substitute.speciesId) {
+        substitute = speciesDataRegistry.getSpecies(leveledId);
+      }
+      return substitute;
+    } catch {
+      return natural; // any lookup failure just falls back to the vanilla roll
+    }
+  };
+
+  arena.__apEncounterBiasPatched = true;
 }
 
 /**
@@ -543,7 +795,8 @@ function poll(): void {
     return;
   }
 
-  installLevelCapOverride(s);
+  installExpGainOverride(s);
+  installEncounterBiasOverride(s);
   ensureNeedsCatchTexture(s);
 
   // ── Dexsanity ────────────────────────────────────────────────────────────
@@ -551,10 +804,17 @@ function poll(): void {
     try {
       const caught = collectCaughtSpecies(s.gameData);
       if (needsBaselineSnapshot) {
-        lastReportedCaught = caught;
+        // Persist immediately -- this is the permanent, never-reported set
+        // for this seed from here on, regardless of how many further State
+        // pushes arrive (see establishBaselineIfNeeded's doc comment).
+        persistBaseline(state.seedName, caught);
         needsBaselineSnapshot = false;
+        lastReportedCaught = caught;
       } else {
         for (const speciesId of caught) {
+          if (excludedBaseline.has(speciesId)) {
+            continue;
+          }
           if (!lastReportedCaught.has(speciesId)) {
             send({ cmd: "Catch", speciesId });
           }

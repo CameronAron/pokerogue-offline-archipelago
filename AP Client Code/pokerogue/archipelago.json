@@ -1,11 +1,11 @@
 {
   "game": "PokeRogue",
-  "world_version": "0.3.0",
+  "world_version": "0.4.0",
   "minimum_ap_version": "0.6.4",
   "compatible_version": 7,
   "authors": [
     "Cameron"
   ],
-  "description": "PokeRogue (standalone offline desktop build) -- independent Dexsanity/Progressive Level Cap sanities, curated or random starters, and species-unlock gating with party-add enforcement.",
+  "description": "PokeRogue (standalone offline desktop build) -- independent Dexsanity/Progressive EXP Gain/Dexsanity Encounter Bias sanities, curated or random starters, and species-unlock gating with party-add enforcement.",
   "world_source": "https://github.com/CameronAron/pokerogue-offline-archipelago"
 }

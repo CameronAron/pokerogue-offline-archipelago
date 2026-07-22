@@ -27,6 +27,9 @@
  *        its species hasn't been unlocked. This is the one thing polling
  *        cannot do -- the game has already decided to add the Pokemon by the
  *        time a poll tick could react, so the refusal has to happen inline.
+ *        Also patches Progressive EXP Gain onto a newly-added party member
+ *        the instant it joins (apPatchExpGain), rather than leaving that
+ *        entirely to installExpGainOverride's once-a-second sweep.
  *
  *   5. src/ui/battle-info/enemy-battle-info.ts
  *        Add a second icon next to the existing "owned" pokeball icon, shown
@@ -210,7 +213,7 @@ if (pokemonSrc.includes("apCanAddToParty")) {
   )[0];
   pokemonSrc = pokemonSrc.replace(
     IMPORT_ANCHOR,
-    `${IMPORT_ANCHOR}\nimport { apCanAddToParty, apNotifyLockedCatch } from "#app/system/archipelago/ap-bridge";`,
+    `${IMPORT_ANCHOR}\nimport { apCanAddToParty, apNotifyLockedCatch, apPatchExpGain } from "#app/system/archipelago/ap-bridge";`,
   );
 
   // 4b: gate the actual party-add. When blocked, `ret` stays null exactly
@@ -248,6 +251,18 @@ if (pokemonSrc.includes("apCanAddToParty")) {
     "    return ret;\n" +
     "  }\n";
   pokemonSrc = pokemonSrc.replace(TAIL_ANCHOR, TAIL_REPLACEMENT);
+
+  // 4d: patch Progressive EXP Gain onto a newly-added party member the
+  // instant it joins, rather than waiting for the next poll tick to catch
+  // it (installExpGainOverride's per-tick sweep is only a backstop).
+  const RET_ANCHOR = "      ret = newPokemon;\n";
+  requireAnchor(pokemonSrc, RET_ANCHOR, "addToParty ret assignment");
+  pokemonSrc = pokemonSrc.replace(
+    RET_ANCHOR,
+    `${RET_ANCHOR}      // archipelago: apply the current EXP gain rate immediately, rather\n` +
+      "      // than waiting for the next poll tick to notice this party member.\n" +
+      "      apPatchExpGain(newPokemon);\n",
+  );
 
   writeFile(POKEMON_PATH, pokemonSrc);
 }

@@ -29,10 +29,13 @@ class GoalWave(Choice):
 
 
 class WaveCheckInterval(Range):
-    """Sends a check every this many waves of Classic mode, up to your goal wave."""
+    """Sends a check every this many waves of Classic mode, up to your goal wave.
+
+    Set to 1 for a check on every single wave.
+    """
 
     display_name = "Wave Check Interval"
-    range_start = 5
+    range_start = 1
     range_end = 25
     default = 10
 
@@ -75,16 +78,35 @@ class SplitDexsanityRewards(Toggle):
     display_name = "Useful Dexsanity Rewards"
 
 
-class ProgressiveLevelCap(Toggle):
-    """Sends a Progressive Level Cap item on every wave check instead of a normal reward.
+class ProgressiveExpGain(Toggle):
+    """Sends a Progressive EXP Gain item on every wave check instead of a normal reward.
 
-    Each copy raises your Classic-mode level cap by one tier, following the
-    same 20-tier table the base game's automatic cap uses. Rare Candy still
-    bypasses the cap entirely, same as vanilla. Independent of Dexsanity --
-    combine both, either alone, or neither.
+    Without any copies, experience gained is reduced to a fraction of normal --
+    still winnable through skill and grinding, never a hard wall. Each copy
+    raises your EXP gain rate, climbing back to and eventually above normal
+    with the full set. Stacks with Exp Charms and other vanilla EXP boosters
+    rather than replacing them: those apply first, then this rate is applied
+    on top. Rare Candy is unaffected either way, same as vanilla. Independent
+    of Dexsanity -- combine both, either alone, or neither.
     """
 
-    display_name = "Progressive Level Cap"
+    display_name = "Progressive EXP Gain"
+
+
+class DexsanityEncounterBias(Range):
+    """Chance to swap a wild or boss encounter for a same-rarity species you still need to catch.
+
+    Only ever substitutes within the encounter's own rarity tier, so it never
+    makes an encounter easier or harder than the wave already intends -- just
+    more likely to be useful. Fades out on its own as you complete more of
+    the dex, since there's less left to swap toward. 0 disables it. Has no
+    effect when Dexsanity is off.
+    """
+
+    display_name = "Dexsanity Encounter Bias"
+    range_start = 0
+    range_end = 100
+    default = 0
 
 
 # ------------------------------------------------------------------ Starters
@@ -102,9 +124,9 @@ class RandomStarters(DefaultOnToggle):
 class StartingSpecies(Range):
     """How many species you start the game with unlocked.
 
-    When Random Starters is off, this is capped by the vanilla 10-point
-    starter cost budget -- if you ask for more than the curated 27-species
-    pool can afford, you'll get as many as fit and a warning during generation.
+    Capped by the vanilla 10-point starter cost budget, same as a real
+    starter-select screen -- if your species pool can't fit this many
+    within budget, you'll get as many as fit and a warning during generation.
     """
 
     display_name = "Starting Species"
@@ -119,8 +141,9 @@ class PokeRogueOptions(PerGameCommonOptions):
     wave_check_interval: WaveCheckInterval
     dexsanity: Dexsanity
     dexsanity_exclude_above_cost: DexsanityExcludeAboveCost
+    dexsanity_encounter_bias: DexsanityEncounterBias
     split_dexsanity_rewards: SplitDexsanityRewards
-    progressive_level_cap: ProgressiveLevelCap
+    progressive_exp_gain: ProgressiveExpGain
     random_starters: RandomStarters
     starting_species: StartingSpecies
     death_link: DeathLink
