@@ -5,7 +5,7 @@ from test.bases import WorldTestBase
 
 from ..Items import EXP_GAIN_TIERS, ITEM_NAME_TO_ID, PROGRESSIVE_EXP_GAIN_ITEM
 from ..Locations import LOCATION_NAME_TO_ID
-from ..Species import DEFAULT_STARTER_POOL, STARTER_SPECIES
+from ..Species import DEFAULT_STARTER_POOL, DEXSANITY_RARE_ENCOUNTER_ONLY, DEXSANITY_UNOBTAINABLE, STARTER_SPECIES
 
 
 class PokeRogueTestBase(WorldTestBase):
@@ -48,7 +48,16 @@ class TestDefaults(PokeRogueTestBase):
     def test_all_species_have_dexsanity(self) -> None:
         names = {loc.name for loc in self.multiworld.get_locations(self.player)}
         for species in self.world.species_pool:
-            self.assertIn(f"Catch {species.display}", names)
+            if species.enum_name in DEXSANITY_UNOBTAINABLE:
+                self.assertNotIn(f"Catch {species.display}", names)
+            else:
+                self.assertIn(f"Catch {species.display}", names)
+
+    def test_unobtainable_species_have_no_location_at_all(self) -> None:
+        names = {loc.name for loc in self.multiworld.get_locations(self.player)}
+        for enum_name in DEXSANITY_UNOBTAINABLE:
+            species = next(s for s in self.world.species_pool if s.enum_name == enum_name)
+            self.assertNotIn(f"Catch {species.display}", names)
 
     def test_no_progressive_exp_gain_by_default(self) -> None:
         names = {item.name for item in self.multiworld.itempool}
@@ -71,13 +80,26 @@ class TestDefaults(PokeRogueTestBase):
         exclude_above = self.world.options.dexsanity_exclude_above_cost.value
         excluded_count = 0
         for species in self.world.species_pool:
+            if species.enum_name in DEXSANITY_UNOBTAINABLE:
+                continue  # no location exists for these at all -- see the dedicated test
             loc = self.multiworld.get_location(f"Catch {species.display}", self.player)
-            if species.cost > exclude_above:
+            if species.cost > exclude_above or species.enum_name in DEXSANITY_RARE_ENCOUNTER_ONLY:
                 self.assertEqual(loc.progress_type, LocationProgressType.EXCLUDED)
                 excluded_count += 1
             else:
                 self.assertEqual(loc.progress_type, LocationProgressType.DEFAULT)
         self.assertGreater(excluded_count, 0)
+
+    def test_rare_encounter_only_species_always_excluded(self) -> None:
+        # Regardless of dexsanity_exclude_above_cost, these five have no
+        # normal wild spawn -- only a rare, non-guaranteed encounter -- so
+        # they stay excluded even at a cost well under the threshold.
+        for enum_name in DEXSANITY_RARE_ENCOUNTER_ONLY:
+            species = next((s for s in self.world.species_pool if s.enum_name == enum_name), None)
+            if species is None:
+                continue  # not every rare-encounter-only species is guaranteed cost-eligible here
+            loc = self.multiworld.get_location(f"Catch {species.display}", self.player)
+            self.assertEqual(loc.progress_type, LocationProgressType.EXCLUDED)
 
     def test_encounter_bias_off_by_default(self) -> None:
         self.assertEqual(self.world.options.dexsanity_encounter_bias.value, 0)
@@ -191,6 +213,38 @@ class TestProgressiveExpGainAlone(PokeRogueTestBase):
         self.assertEqual(len(self.world.species_pool), 0)
 
 
+class TestDisableLevelCap(PokeRogueTestBase):
+    """A pure gameplay toggle -- no items or locations of its own, and
+    independent of Progressive EXP Gain (which can still throttle the rate
+    even with no ceiling to hit)."""
+
+    options = {"disable_level_cap": True, "progressive_exp_gain": False}
+
+    def test_pool_balance(self) -> None:
+        locations = self.multiworld.get_unfilled_locations(self.player)
+        self.assertEqual(len(self.multiworld.itempool), len(locations))
+
+    def test_slot_data_reflects_it(self) -> None:
+        data = self.world.fill_slot_data()
+        self.assertTrue(data["disable_level_cap"])
+
+
+class TestDisableLevelCapWithExpGain(PokeRogueTestBase):
+    """Both axes on at once -- a throttled rate with no ceiling to eventually
+    hit is a legitimate combination, not a conflict."""
+
+    options = {"disable_level_cap": True, "progressive_exp_gain": True}
+
+    def test_pool_balance(self) -> None:
+        locations = self.multiworld.get_unfilled_locations(self.player)
+        self.assertEqual(len(self.multiworld.itempool), len(locations))
+
+    def test_both_flags_true(self) -> None:
+        data = self.world.fill_slot_data()
+        self.assertTrue(data["disable_level_cap"])
+        self.assertTrue(data["progressive_exp_gain"])
+
+
 class TestDexsanityEncounterBias(PokeRogueTestBase):
     """Encounter bias is a plain percentage option, independent of everything else."""
 
@@ -209,6 +263,8 @@ class TestDexsanityEncounterBias(PokeRogueTestBase):
         # must never change the item/location pool itself.
         names = {loc.name for loc in self.multiworld.get_locations(self.player)}
         for species in self.world.species_pool:
+            if species.enum_name in DEXSANITY_UNOBTAINABLE:
+                continue
             self.assertIn(f"Catch {species.display}", names)
 
 
@@ -256,13 +312,25 @@ class TestCuratedStartersOverBudget(PokeRogueTestBase):
 
 
 class TestExcludeAboveCostDisabled(PokeRogueTestBase):
-    """Setting the exclusion threshold to 10 (the max cost) disables it."""
+    """Setting the exclusion threshold to 10 (the max cost) disables the
+    cost-based side of exclusion. The five rare-encounter-only species stay
+    excluded regardless -- that's a fixed obtainability fact, not something
+    the cost slider controls."""
 
     options = {"dexsanity_exclude_above_cost": 10}
 
-    def test_nothing_excluded(self) -> None:
+    def test_nothing_excluded_except_rare_encounter_species(self) -> None:
         for loc in self.multiworld.get_locations(self.player):
-            if loc.name.startswith("Catch "):
+            if not loc.name.startswith("Catch "):
+                continue
+            display = loc.name[len("Catch ") :]
+            is_rare_encounter_only = any(
+                s.enum_name in DEXSANITY_RARE_ENCOUNTER_ONLY and s.display == display
+                for s in self.world.species_pool
+            )
+            if is_rare_encounter_only:
+                self.assertEqual(loc.progress_type, LocationProgressType.EXCLUDED)
+            else:
                 self.assertEqual(loc.progress_type, LocationProgressType.DEFAULT)
 
     def test_pool_balance(self) -> None:
@@ -322,6 +390,14 @@ class TestDataIntegrity(PokeRogueTestBase):
     def test_unique_location_ids(self) -> None:
         self.assertEqual(len(LOCATION_NAME_TO_ID), len(set(LOCATION_NAME_TO_ID.values())))
 
+    def test_obtainability_sets_resolve(self) -> None:
+        all_names = {s.enum_name for s in STARTER_SPECIES}
+        for enum_name in DEXSANITY_UNOBTAINABLE | DEXSANITY_RARE_ENCOUNTER_ONLY:
+            self.assertIn(enum_name, all_names, f"{enum_name} is not a known starter species")
+
+    def test_obtainability_sets_disjoint(self) -> None:
+        self.assertEqual(DEXSANITY_UNOBTAINABLE & DEXSANITY_RARE_ENCOUNTER_ONLY, set())
+
     def test_unique_species_names(self) -> None:
         displays = [s.display for s in STARTER_SPECIES]
         self.assertEqual(len(displays), len(set(displays)))
@@ -341,6 +417,7 @@ class TestDataIntegrity(PokeRogueTestBase):
             "dexsanity",
             "dexsanity_encounter_bias",
             "progressive_exp_gain",
+            "disable_level_cap",
             "dexsanity_species",
             "species_items",
             "all_starter_species",
@@ -357,3 +434,4 @@ class TestDataIntegrity(PokeRogueTestBase):
         self.assertIsNone(data["progressive_exp_gain_item"])
         self.assertEqual(data["exp_gain_tiers"], [])
         self.assertEqual(data["dexsanity_encounter_bias"], 0)
+        self.assertFalse(data["disable_level_cap"])

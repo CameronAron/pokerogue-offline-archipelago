@@ -1,46 +1,33 @@
 # PokeRogue Archipelago
 
-A standalone, offline desktop build of [PokéRogue](https://pokerogue.net/)
-with built-in support for [Archipelago](https://archipelago.gg) multiworld
-randomizers.
+A standalone, offline desktop build of [PokéRogue](https://pokerogue.net/) with Archipelago multiworld support built in.
 
-This is a fork of [PokéRogue Offline](https://github.com/PokeRogue-Offline/pokerogue-offline),
-which itself packages the official PokéRogue game as a native Windows,
-macOS, and Linux application. This fork adds an Archipelago client bridge on
-top, letting a Classic mode run send and receive checks alongside any other
-game in a multiworld.
-
-## What Archipelago support adds
-
-- **Dexsanity** -- catching each species for the first time sends a check,
-  and the matching item is what lets you actually field it. Every species
-  starts locked.
-- **Wave milestones** -- Classic mode sends a check every N waves, up to a
-  configurable goal wave (default 200, the true ending).
-- **Progressive Level Cap** -- an alternative to Dexsanity's species-hunting:
-  wave checks instead raise your Classic-mode level cap in the same 20-tier
-  progression the base game's own automatic cap uses.
-- **Curated or random starters** -- start with a random selection from every
-  species in the game, or the same 27 species (three per generation) a real
-  fresh PokéRogue account starts with, under the same 10-point cost budget
-  the game's own starter-select screen enforces.
-
-Full setup instructions, including how to build the patched game and connect
-it to a multiworld, are in the
-[setup guide](AP%20Client%20Code/pokerogue/docs/setup_en.md).
+This started as a fork of [PokéRogue Offline](https://github.com/PokeRogue-Offline/pokerogue-offline), which packages PokéRogue as a native Windows, macOS, and Linux app. This project adds an Archipelago client on top, so a Classic mode run can send and receive checks alongside any other game in your multiworld.
 
 ## Getting started
 
-1. Install [Archipelago](https://github.com/ArchipelagoMW/Archipelago/releases).
-2. Drop `pokerogue.apworld` from `releases` into Archipelago's
-   `custom_worlds` folder.
-3. Follow the [setup guide](AP%20Client%20Code/pokerogue/docs/setup_en.md) to
-   generate a seed and connect.
+Grab the latest release from the [Releases page](../../releases). It includes the game and the apworld together, so there's nothing to build or clone.
 
+1. Copy `pokerogue.apworld` into your Archipelago install's `custom_worlds` folder and restart the Launcher.
+2. Generate a seed.
+3. Start **PokeRogue Client** from the Archipelago Launcher, then run the game from wherever you unzipped it. It connects on its own.
+
+The full [setup guide](AP%20Client%20Code/pokerogue/docs/setup_en.md) covers the rest, including troubleshooting and client commands.
+
+## What Archipelago support adds
+
+**Dexsanity.** Every species starts locked. Catching one for the first time sends a check, and the matching item is what lets you actually field it — including a wild catch mid-run, which won't join your party without it.
+
+**Wave milestones.** A check every N waves of Classic mode, up to a configurable goal (200 by default, the real ending).
+
+**Progressive EXP Gain.** An alternative to species-hunting: wave checks raise your experience gain rate instead, starting reduced and climbing past normal with the full set. It's a rate, not a hard cap, so a run can never become unwinnable just because the multiworld hasn't sent enough copies yet.
+
+**Disable Level Cap.** A separate option that removes Classic mode's normal level ceiling entirely — independent of Progressive EXP Gain, since one controls how fast experience comes in and the other controls how high it's allowed to go.
+
+**Dexsanity Encounter Bias.** An optional chance to nudge a wild or boss encounter toward a species you still need, without ever touching the game's own random number sequence — the substitution only happens after the game's natural roll has already fully resolved.
+
+**Curated or random starters.** Start with a random selection from the whole roster, or the same 27 species (three per generation) a fresh PokéRogue account starts with, both under the same 10-point cost budget the game's own starter screen enforces.
 
 ## Credits
 
-Built on [PokéRogue](https://github.com/pagefaultgames/pokerogue) and
-[PokéRogue Offline](https://github.com/PokeRogue-Offline/pokerogue-offline).
-Not affiliated with Nintendo, The Pokémon Company, or the official PokéRogue
-team.
+Built on [PokéRogue](https://github.com/pagefaultgames/pokerogue) and [PokéRogue Offline](https://github.com/PokeRogue-Offline/pokerogue-offline). Not affiliated with Nintendo, The Pokémon Company, or the official PokéRogue team.

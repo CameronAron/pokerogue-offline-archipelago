@@ -633,3 +633,29 @@ DEFAULT_STARTER_TRIO_NAMES: dict[int, tuple[str, str, str]] = {
 DEFAULT_STARTER_POOL: tuple[SpeciesInfo, ...] = tuple(
     BY_ENUM_NAME[name] for names in DEFAULT_STARTER_TRIO_NAMES.values() for name in names
 )
+
+#: Species with no wild biome spawn data at all (checked against every
+#: src/data/balance/biomes/*.ts pokemonPool, see tools/research_biome_depth.py)
+#: and no other in-run obtainment path either -- confirmed by checking
+#: src/data/mystery-encounters/encounters/dark-deal-encounter.ts, where every
+#: one of these appears explicitly under its `excludedBosses` list, meaning
+#: even that encounter's species-trade mechanic is barred from offering them.
+#: A dexsanity check requiring a genuine catch of one of these cannot be
+#: completed by ordinary play, so no dexsanity location is created for them
+#: at all -- see __init__.py's create_regions.
+DEXSANITY_UNOBTAINABLE: frozenset[str] = frozenset(
+    {"MEW", "CELEBI", "JIRACHI", "DEOXYS", "MANAPHY", "ARCEUS", "VICTINI", "MELTAN", "PECHARUNT"}
+)
+
+#: Species with no wild biome spawn data, but a real (if rare) in-run
+#: obtainment path: src/data/mystery-encounters/encounters/
+#: the-expert-pokemon-breeder-encounter.ts offers each of these as a
+#: breeding reward. That encounter is MysteryEncounterTier.ULTRA, PokeRogue's
+#: rarest encounter tier, and is not guaranteed to appear in a given run --
+#: closer in practice to an unusually rare wild spawn than a normal catch.
+#: Their dexsanity location still exists, but is always excluded from ever
+#: holding something another location needs, regardless of the
+#: dexsanity_exclude_above_cost setting -- see __init__.py's create_regions.
+DEXSANITY_RARE_ENCOUNTER_ONLY: frozenset[str] = frozenset(
+    {"AZURILL", "WYNAUT", "BUDEW", "MIME_JR", "PHIONE"}
+)

@@ -127,6 +127,18 @@ class PokeRogueCommandProcessor(ClientCommandProcessor):
         ctx.queue_push_state()
         logger.info("Resync queued.")
 
+    def _cmd_rebaseline(self) -> None:
+        """Force the game to re-snapshot which species don't count as new catches.
+
+        Use this if the save's existing catch history is firing checks it
+        shouldn't -- it re-excludes whatever is currently caught, without a
+        full data wipe. Check the game's own console for confirmation; look
+        for lines starting with "[Archipelago] baseline:".
+        """
+        ctx: PokeRogueContext = self.ctx
+        asyncio.create_task(ctx.send_to_game({"cmd": "Rebaseline"}))
+        logger.info("Rebaseline requested -- check the game's console for confirmation.")
+
     def _cmd_expgain(self) -> None:
         """Show your current Progressive EXP Gain rate."""
         ctx: PokeRogueContext = self.ctx
@@ -164,6 +176,7 @@ class PokeRogueContext(CommonContext):
         self.dexsanity: bool = True
         self.dexsanity_encounter_bias: int = 0
         self.progressive_exp_gain_enabled: bool = False
+        self.disable_level_cap_enabled: bool = False
         #: numeric SpeciesId -> AP location id
         self.dexsanity_species: dict[int, int] = {}
         #: AP item id -> numeric SpeciesId
@@ -233,6 +246,7 @@ class PokeRogueContext(CommonContext):
         self.dexsanity = bool(data.get("dexsanity", True))
         self.dexsanity_encounter_bias = int(data.get("dexsanity_encounter_bias", 0))
         self.progressive_exp_gain_enabled = bool(data.get("progressive_exp_gain", False))
+        self.disable_level_cap_enabled = bool(data.get("disable_level_cap", False))
         self.dexsanity_species = {
             int(k): int(v) for k, v in (data.get("dexsanity_species") or {}).items()
         }
@@ -366,6 +380,7 @@ class PokeRogueContext(CommonContext):
             "exp_gain_count": self.exp_gain_count,
             "exp_gain_tiers": self.exp_gain_tiers,
             "progressive_exp_gain": self.progressive_exp_gain_enabled,
+            "disable_level_cap": self.disable_level_cap_enabled,
             # Species with a live dexsanity check not yet completed. Drives
             # the "still needs catching" indicator in-game.
             "pending_dexsanity_species": pending_dexsanity,

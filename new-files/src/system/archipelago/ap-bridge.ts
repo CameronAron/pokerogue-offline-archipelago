@@ -126,6 +126,10 @@ interface ApState {
    * wild/boss encounter. 0 means the mechanism never fires. */
   dexsanityEncounterBias: number;
   progressiveExpGain: boolean;
+  /** Removes Classic mode's own wave-based level cap entirely. Independent
+   * of progressiveExpGain -- one controls how fast EXP comes in, this
+   * controls how high a level it's ever allowed to reach. */
+  disableLevelCap: boolean;
   deathLink: boolean;
   /** Species the player may currently use. Sole source of truth for the gate. */
   unlocked: Set<number>;
@@ -151,6 +155,7 @@ const state: ApState = {
   dexsanity: true,
   dexsanityEncounterBias: 0,
   progressiveExpGain: false,
+  disableLevelCap: false,
   deathLink: false,
   unlocked: new Set<number>(),
   allStarters: new Set<number>(),
@@ -194,7 +199,49 @@ function gateActive(): boolean {
   return state.connected && state.dexsanity;
 }
 
-/** Whether the player is currently allowed to use this species. Read-only;
+/**
+ * A species and every one of its prevolutions, walking the chain the exact
+ * same way `GameData.setPokemonSpeciesCaught`'s own `checkPrevolution` does
+ * (`speciesDataRegistry.getPrevolution`, repeated until it returns null) --
+ * all the way to the true base form, not just the nearest registered
+ * starter. This matters because that same recursive walk is what credits a
+ * catch: catching a wild Raichu increments `caughtCount` for Raichu, then
+ * Pikachu, then Pichu in turn, since Pichu and Pikachu are each their own
+ * independently-registered starter. Checking unlock/pending status against
+ * only the encountered species' own ID -- which is what an earlier version
+ * of this file did -- can never match anything for an already-evolved wild
+ * encounter, since evolved-only forms never appear in `species_items` or
+ * `dexsanity_species` at all. That meant a wild Charizard, Raichu, or any
+ * other already-evolved encounter was being rejected from the party
+ * unconditionally, regardless of whether Charmander or Pikachu was
+ * unlocked -- not a cosmetic gap, a real gate over-block.
+ */
+function apEvolutionChain(speciesId: number): number[] {
+  const chain = [speciesId];
+  let current = speciesId;
+  for (let i = 0; i < 16; i++) {
+    // 16 is generously above any real PokeRogue evolution chain length;
+    // purely a guard against an unexpected cycle turning this into an
+    // infinite loop, not a realistic depth limit.
+    let prevolution: number | null = null;
+    try {
+      prevolution = speciesDataRegistry.getPrevolution(current);
+    } catch {
+      break;
+    }
+    if (prevolution == null || chain.includes(prevolution)) {
+      break;
+    }
+    chain.push(prevolution);
+    current = prevolution;
+  }
+  return chain;
+}
+
+/** Whether the player is currently allowed to use this species -- checking
+ * the species itself and every prevolution in its chain (see
+ * apEvolutionChain), so an already-evolved wild encounter correctly counts
+ * as unlocked whenever any ancestor in its line has been granted. Read-only;
  * the gate itself is enforced by writing dexData directly (see below) and by
  * apCanAddToParty for in-run catches, so nothing needs to call this to block
  * a selection. Exposed for any future UI that wants to read it. */
@@ -202,7 +249,7 @@ export function apIsSpeciesUnlocked(speciesId: number): boolean {
   if (!gateActive()) {
     return true;
   }
-  return state.unlocked.has(speciesId);
+  return apEvolutionChain(speciesId).some(id => state.unlocked.has(id));
 }
 
 /** Called from the patched `PlayerPokemon.addToParty` to decide whether a
@@ -222,13 +269,15 @@ export function apNotifyLockedCatch(speciesId: number): void {
   send({ cmd: "LockedCatch", speciesId, speciesName: SpeciesId[speciesId] ?? null });
 }
 
-/** Whether this species still has an uncompleted dexsanity check. Drives the
+/** Whether this species, or any prevolution in its chain, still has an
+ * uncompleted dexsanity check (see apEvolutionChain for why the chain, not
+ * just the encountered species' own ID, has to be checked). Drives the
  * "you should catch this" icon; see enemy-battle-info.ts's patch site. */
 export function apNeedsCatch(speciesId: number): boolean {
   if (!state.connected || !state.dexsanity) {
     return false;
   }
-  return state.pendingDexsanitySpecies.has(speciesId);
+  return apEvolutionChain(speciesId).some(id => state.pendingDexsanitySpecies.has(id));
 }
 
 /** Called by the patched GameOverPhase on a Classic victory. */
@@ -359,17 +408,29 @@ function saveBaselineMap(map: Record<string, number[]>): void {
  * Ensure `excludedBaseline` reflects the right permanent exclusion set for
  * whichever seed is currently connected. Three cases:
  *
- *   - No seed_name at all (older servers): nothing to do, exclude nothing.
+ *   - No seed_name at all (older servers, or a momentary gap before it's
+ *     available): leave `excludedBaseline` exactly as it already is, rather
+ *     than clearing it. A transient null observation must never be able to
+ *     silently drop protection that was already correctly established --
+ *     the only way to lose an established baseline is a genuinely different
+ *     seed_name showing up.
  *   - A seed we've never seen on this save: flag that the next poll should
  *     snapshot current catches and persist them as this seed's baseline.
  *   - A seed we've already tagged before (including "the same seed as last
  *     State push", which is the overwhelmingly common case -- this runs on
  *     every State message): load its already-persisted baseline back into
  *     `excludedBaseline` so it survives regardless of what else changes.
+ *
+ * Every branch logs what it did. This exists to be observable from the
+ * game's own devtools console: if reported catch history isn't being
+ * excluded as expected, these lines show directly whether seed_name is
+ * reaching the bridge at all, and whether it's being recognised as new or
+ * already-known -- narrowing down which half of the mechanism to look at
+ * without needing to add anything just to investigate it.
  */
 function establishBaselineIfNeeded(seedName: string | null): void {
   if (!seedName) {
-    excludedBaseline = new Set<number>();
+    logBaseline(`no seed_name yet (${excludedBaseline.size} species currently excluded, unchanged)`);
     return;
   }
 
@@ -378,15 +439,27 @@ function establishBaselineIfNeeded(seedName: string | null): void {
 
   if (existing) {
     excludedBaseline = new Set<number>(existing.map(Number));
+    logBaseline(`reusing existing baseline for ${seedName} (${excludedBaseline.size} species excluded)`);
     return;
   }
 
   needsBaselineSnapshot = true;
+  logBaseline(`new seed ${seedName} -- baselining current catch history on the next poll`);
+}
+
+/** Force a fresh baseline for whichever seed is currently connected, even if
+ * one was already established. Exposed via the client's `/rebaseline`
+ * command as a manual escape hatch -- useful if a save's history needs
+ * re-excluding without a full data wipe (Settings -> Offline -> Clear All
+ * Data), or while narrowing down a baseline-related report. */
+export function apForceRebaseline(): void {
+  needsBaselineSnapshot = true;
+  logBaseline("forced rebaseline requested (/rebaseline)");
+}
+
+function logBaseline(message: string): void {
   try {
-    console.info(
-      `[Archipelago] New multiworld detected (${seedName}). Baselining existing catch ` +
-        "history on this save -- only new catches from here on will send checks.",
-    );
+    console.info(`[Archipelago] baseline: ${message}`);
   } catch {
     /* ignore */
   }
@@ -395,6 +468,7 @@ function establishBaselineIfNeeded(seedName: string | null): void {
 /** Called from poll() once, right after a fresh baseline snapshot is taken. */
 function persistBaseline(seedName: string | null, caught: Set<number>): void {
   excludedBaseline = new Set<number>(caught);
+  logBaseline(`snapshot taken -- ${caught.size} species excluded going forward`);
   if (!seedName) {
     return;
   }
@@ -413,6 +487,7 @@ function handleMessage(msg: Record<string, any>): void {
       state.dexsanity = Boolean(msg.dexsanity);
       state.dexsanityEncounterBias = Number(msg.dexsanity_encounter_bias ?? 0);
       state.progressiveExpGain = Boolean(msg.progressive_exp_gain);
+      state.disableLevelCap = Boolean(msg.disable_level_cap);
       state.deathLink = Boolean(msg.death_link);
       state.unlocked = new Set<number>((msg.unlocked_species ?? []).map(Number));
       state.allStarters = new Set<number>((msg.all_starter_species ?? []).map(Number));
@@ -438,6 +513,11 @@ function handleMessage(msg: Record<string, any>): void {
       // primitive that wouldn't corrupt a session, so we surface a message
       // instead of forcing a game over.
       showMessage(`DeathLink: ${msg.source ?? "someone"} died.`);
+      break;
+    }
+
+    case "Rebaseline": {
+      apForceRebaseline();
       break;
     }
 
@@ -610,6 +690,41 @@ function installExpGainOverride(s: any): void {
 }
 
 /**
+ * Install (once) a wrapper around `globalScene.getMaxExpLevel` that removes
+ * the wave-based cap entirely when Disable Level Cap is on, returning a very
+ * high ceiling regardless of wave. Left untouched -- returns the vanilla
+ * value -- whenever the option is off, before AP connects, or when the
+ * caller explicitly asked to ignore the cap already (Rare Candy's own
+ * bypass; passing through here changes nothing about how that already
+ * works).
+ *
+ * A completely separate axis from Progressive EXP Gain: that hook scales how
+ * much EXP arrives per battle (installExpGainOverride, on `Pokemon.addExp`);
+ * this one only affects the ceiling `addExp` is allowed to level up to. They
+ * compose without needing to know about each other -- a low gain rate still
+ * applies normally even with no ceiling at all, it just takes longer to
+ * reach any given level.
+ *
+ * Patches the live scene instance, not the source -- the same pattern this
+ * project previously used for the old hard-capped level design, before that
+ * was replaced by the EXP-rate mechanic. Idempotent via a marker property;
+ * self-reinstalls if the scene is ever recreated.
+ */
+function installLevelCapDisableOverride(s: any): void {
+  if (s.__apLevelCapDisablePatched || typeof s.getMaxExpLevel !== "function") {
+    return;
+  }
+  const original: (ignoreLevelCap?: boolean) => number = s.getMaxExpLevel.bind(s);
+  s.getMaxExpLevel = (ignoreLevelCap = false): number => {
+    if (ignoreLevelCap || !state.connected || !state.disableLevelCap) {
+      return original(ignoreLevelCap);
+    }
+    return 9999;
+  };
+  s.__apLevelCapDisablePatched = true;
+}
+
+/**
  * Find which of `arena.pokemonPool`'s tier arrays contains this species ID.
  * Deliberately searches by value across whatever tiers exist rather than
  * indexing by a specific `BiomePoolTier` enum value -- that avoids this
@@ -706,11 +821,24 @@ function installEncounterBiasOverride(s: any): void {
     }
 
     const naturalId: number = natural.speciesId;
-    if (state.pendingDexsanitySpecies.has(naturalId)) {
-      return natural; // already a useful roll; nothing to improve
+    const naturalChain = apEvolutionChain(naturalId);
+    if (naturalChain.some(id => state.pendingDexsanitySpecies.has(id))) {
+      return natural; // already a useful roll (itself or an ancestor); nothing to improve
     }
 
-    const tierPool = findMatchingTierPool(arena, naturalId);
+    // Tier pools store base/catchable forms, but `natural` may already be a
+    // leveled-up evolution (`getWildSpeciesForLevel` runs before this point).
+    // Try the encountered species first, then fall back through its
+    // prevolution chain, so a high-level wild Charizard can still match
+    // Charmander's tier instead of being skipped for not being found
+    // directly in any pool array.
+    let tierPool: number[] | null = null;
+    for (const id of naturalChain) {
+      tierPool = findMatchingTierPool(arena, id);
+      if (tierPool) {
+        break;
+      }
+    }
     if (!tierPool) {
       return natural; // can't confidently match rarity; leave this one alone
     }
@@ -738,6 +866,14 @@ function installEncounterBiasOverride(s: any): void {
       );
       if (leveledId !== substitute.speciesId) {
         substitute = speciesDataRegistry.getSpecies(leveledId);
+      }
+      try {
+        console.info(
+          `[Archipelago] Encounter bias: swapped ${SpeciesId[naturalId] ?? naturalId} for ` +
+            `${SpeciesId[substitute.speciesId] ?? substitute.speciesId} (still needed for dexsanity).`,
+        );
+      } catch {
+        /* logging failure is never worth losing the substitution over */
       }
       return substitute;
     } catch {
@@ -796,6 +932,7 @@ function poll(): void {
   }
 
   installExpGainOverride(s);
+  installLevelCapDisableOverride(s);
   installEncounterBiasOverride(s);
   ensureNeedsCatchTexture(s);
 

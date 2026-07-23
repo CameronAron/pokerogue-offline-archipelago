@@ -4,8 +4,8 @@
 
 The [player options page](../player-options) has all the options you need to
 configure and export a config file. Options are grouped into **Sanities**
-(Dexsanity, its cost exclusion, Encounter Bias, Progressive EXP Gain) and
-**Starters** (random vs. curated, how many).
+(Dexsanity, its cost exclusion, Encounter Bias, Progressive EXP Gain, Disable
+Level Cap) and **Starters** (random vs. curated, how many).
 
 ## What does randomization do to this game?
 
@@ -53,6 +53,25 @@ that only does anything while Dexsanity is on.
   never affects anything else about how the encounter is generated (shiny
   odds, nature, IVs are untouched).
 
+**Disable Level Cap** (off by default) removes Classic mode's normal level
+ceiling entirely, letting a Pokemon level without limit. This is a separate
+option from Progressive EXP Gain -- one controls how fast experience arrives,
+this one controls how high a level it's ever allowed to reach. Turn on
+either, both, or neither.
+
+### A few species aren't part of Dexsanity
+
+Nine species have no wild spawn anywhere in the game and no other way to
+obtain them in a Classic run either, so they don't get a Dexsanity location
+at all: Mew, Celebi, Jirachi, Deoxys, Manaphy, Arceus, Victini, Meltan, and
+Pecharunt.
+
+Five more -- Azurill, Wynaut, Budew, Mime Jr., and Phione -- have no wild
+spawn but are obtainable through a specific, uncommon in-run encounter. Their
+checks still exist, but they're always protected from holding anything
+another location needs, the same way the cost exclusion below protects
+species above its threshold, regardless of what that threshold is set to.
+
 ### Protecting rare species from gating other players
 
 **Dexsanity Exclude Above Cost** (default 8) keeps species above that starter
@@ -87,6 +106,8 @@ shorter goal you complete as soon as you've cleared that wave.
 
 Any of them -- species unlocks, Progressive EXP Gain copies, and filler all
 shuffle freely into the multiworld, subject to the exclusion protection above.
+Disable Level Cap has no item or location of its own; it only changes how
+Classic mode plays.
 
 ## What does another world's item look like in PokeRogue?
 
@@ -109,6 +130,8 @@ save yet.
 - `/pending` -- species with a dexsanity check you haven't caught yet.
 - `/expgain` -- your current Progressive EXP Gain rate.
 - `/resync` -- force a full state push to the game.
+- `/rebaseline` -- re-exclude whatever's currently caught from firing checks,
+  without a full data wipe.
 
 ## Known limitations
 

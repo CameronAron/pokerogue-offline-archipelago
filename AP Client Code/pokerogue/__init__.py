@@ -35,13 +35,21 @@ from .Options import (
     Dexsanity,
     DexsanityEncounterBias,
     DexsanityExcludeAboveCost,
+    DisableLevelCap,
     PokeRogueOptions,
     ProgressiveExpGain,
     RandomStarters,
     SplitDexsanityRewards,
     StartingSpecies,
 )
-from .Species import DEFAULT_STARTER_POOL, SOURCE_GAME_VERSION, STARTER_SPECIES, SpeciesInfo
+from .Species import (
+    DEFAULT_STARTER_POOL,
+    DEXSANITY_RARE_ENCOUNTER_ONLY,
+    DEXSANITY_UNOBTAINABLE,
+    SOURCE_GAME_VERSION,
+    STARTER_SPECIES,
+    SpeciesInfo,
+)
 
 logger = logging.getLogger("PokeRogue")
 
@@ -99,6 +107,7 @@ class PokeRogueWeb(WebWorld):
                 DexsanityEncounterBias,
                 SplitDexsanityRewards,
                 ProgressiveExpGain,
+                DisableLevelCap,
             ],
         ),
         OptionGroup("Starters", [RandomStarters, StartingSpecies]),
@@ -249,13 +258,25 @@ class PokeRogueWorld(World):
             for species in self.species_pool:
                 if species.species_id in self.precredited_species:
                     continue
+                if species.enum_name in DEXSANITY_UNOBTAINABLE:
+                    # No wild spawn anywhere, and confirmed excluded from the
+                    # one encounter that could otherwise substitute for one --
+                    # a check requiring a genuine catch of this species could
+                    # never be completed by ordinary play, so it doesn't get
+                    # a location at all. See Species.py's own docstring for
+                    # exactly what was checked.
+                    continue
                 name = dexsanity_location_name(species.display)
                 loc = PokeRogueLocation(self.player, name, LOCATION_NAME_TO_ID[name], menu)
-                if species.cost > exclude_above:
+                if species.cost > exclude_above or species.enum_name in DEXSANITY_RARE_ENCOUNTER_ONLY:
                     # Still a real, checkable location -- just protected from
                     # ever holding something another location needs, so a
                     # rare or hard-to-reach species can't gate someone else's
                     # progress. See dexsanity_exclude_above_cost's docstring.
+                    # Rare-encounter-only species are always excluded here
+                    # regardless of the cost threshold -- they have no normal
+                    # wild spawn at any cost, only a rare, non-guaranteed
+                    # encounter, which the cost slider has no way to see.
                     loc.progress_type = LocationProgressType.EXCLUDED
                     self.excluded_location_count += 1
                 menu.locations.append(loc)
@@ -383,6 +404,7 @@ class PokeRogueWorld(World):
                     str(s.species_id): LOCATION_NAME_TO_ID[dexsanity_location_name(s.display)]
                     for s in self.species_pool
                     if s.species_id not in self.precredited_species
+                    and s.enum_name not in DEXSANITY_UNOBTAINABLE
                 }
                 if dexsanity_on
                 else {}
@@ -406,4 +428,5 @@ class PokeRogueWorld(World):
                 ITEM_NAME_TO_ID[PROGRESSIVE_EXP_GAIN_ITEM] if exp_gain_on else None
             ),
             "exp_gain_tiers": list(EXP_GAIN_TIERS) if exp_gain_on else [],
+            "disable_level_cap": bool(self.options.disable_level_cap),
         }

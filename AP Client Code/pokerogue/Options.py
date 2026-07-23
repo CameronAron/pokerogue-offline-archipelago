@@ -93,6 +93,20 @@ class ProgressiveExpGain(Toggle):
     display_name = "Progressive EXP Gain"
 
 
+class DisableLevelCap(Toggle):
+    """Removes Classic mode's normal level cap entirely, letting a Pokemon level without limit.
+
+    Independent of Progressive EXP Gain -- that option controls how fast
+    experience comes in, this controls how high a level it can ever reach.
+    Combine both for a run with neither a rate nor a ceiling, use just this
+    one to keep normal pacing but remove the ceiling, or leave it off to
+    keep vanilla's own wave-based cap.
+    """
+
+    display_name = "Disable Level Cap"
+
+
+
 class DexsanityEncounterBias(Range):
     """Chance to swap a wild or boss encounter for a same-rarity species you still need to catch.
 
@@ -144,6 +158,7 @@ class PokeRogueOptions(PerGameCommonOptions):
     dexsanity_encounter_bias: DexsanityEncounterBias
     split_dexsanity_rewards: SplitDexsanityRewards
     progressive_exp_gain: ProgressiveExpGain
+    disable_level_cap: DisableLevelCap
     random_starters: RandomStarters
     starting_species: StartingSpecies
     death_link: DeathLink
